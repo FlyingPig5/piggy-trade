@@ -52,7 +52,7 @@ ICON_BACK      = "\U0000EF7D" # mdi-arrow-left (Back arrow)
 ICON_PASTE     = "\U0000E2C4" # mdi-content-paste (Standard clipboard)
 
 
-DEFAULT_FAVORITES = ["ERG", "sigusd", "sigrsv", "rsADA", "cmt", "cat", "paideia", "gif"]
+DEFAULT_FAVORITES = ["ERG", "SigUSD", "USE", "SigRSV", "rsADA", "DexyGold", "RSN", "QUACKS"]
 DEFAULT_NODE_KEY = "Pub1"
 DEFAULT_NODE = NODES.get(DEFAULT_NODE_KEY)
 
