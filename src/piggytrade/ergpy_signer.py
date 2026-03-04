@@ -5,6 +5,7 @@
 
 import os
 import sys
+import json
 from pathlib import Path
 
 # ── Platform detection ──────────────────────────────────────────────────────
@@ -211,10 +212,10 @@ class ErgoSigner:
     Uses pyjnius for both desktop (standard JVM) and Android (ART via DexClassLoader).
     """
 
-    def __init__(self, node_url: str):
+    def __init__(self, node_url: str, network_type: str = None):
         import threading
         curr_thread = threading.current_thread().name
-        print(f"[ergpy_signer] ({curr_thread}) ErgoSigner.__init__ start. node={node_url}", flush=True)
+        print(f"[ergpy_signer] ({curr_thread}) ErgoSigner.__init__ start. node={node_url} net={network_type}", flush=True)
 
         if IS_ANDROID:
             try:
@@ -229,9 +230,22 @@ class ErgoSigner:
             raise RuntimeError("Ergo Appkit classes failed to load. Ensure ergo.jar is available.")
 
         self.node_url = node_url
-        self._network_type = self._detect_network(node_url)
+        
+        # If network_type is passed (e.g. "mainnet"), convert it to Java constant immediately
+        if network_type:
+            n_up = network_type.lower()
+            if n_up == "mainnet":
+                self._network_type = getattr(NetworkType, "MAINNET", None)
+            else:
+                self._network_type = getattr(NetworkType, "TESTNET", None)
+        else:
+            self._network_type = self._detect_network(node_url)
+            
         print(f"[ergpy_signer] ErgoSigner.__init__: network_type={self._network_type}", flush=True)
 
+        # Only create the full ErgoClient if we actually have a node connection
+        # (Wallet creation can skip the .execute() call if we just need math)
+        self._ctx = None
         explorer_url = RestApiErgoClient.getDefaultExplorerUrl(self._network_type)
         
         self._ergo_client = RestApiErgoClient.create(
@@ -241,21 +255,23 @@ class ErgoSigner:
             explorer_url
         )
 
-        self._executor = _TripExecutor()
-        try:
-            res = self._ergo_client.execute(self._executor)
-            self._ctx = res if res is not None else self._executor.captured_ctx
-        except Exception as e:
-            print(f"[ergpy_signer] Error executing ErgoClient: {e}", flush=True)
-            self._ctx = self._executor.captured_ctx
+        # We only try to execute if we aren't in a hurry (not passed a network_type)
+        if not network_type:
+            self._executor = _TripExecutor()
+            try:
+                res = self._ergo_client.execute(self._executor)
+                self._ctx = res if res is not None else self._executor.captured_ctx
+            except Exception as e:
+                print(f"[ergpy_signer] Error executing ErgoClient: {e}", flush=True)
+                self._ctx = self._executor.captured_ctx
 
-        if self._ctx is None:
-            raise RuntimeError(
-                "Could not obtain wallet boxes from the node.\n\n"
-                "This usually means the you have conflicting transactions\n\n"
-                "in the mempool or Ergo node is unreachable.\n"
-                "Use advanced setting to turn of mempool or try a different node.."
-            )
+            if self._ctx is None:
+                raise RuntimeError(
+                    "The box being spent could not be found on the Ergo node UTXO set.\n\n"
+                    "This usually happens when you have multiple pending transactions for this address "
+                    "in the mempool. Please wait until your transactions are confirmed, or use "
+                    "Advanced/Debug settings to turn off Mempool for your wallet."
+                )
 
     @staticmethod
     def get_node_config_p2(n: int) -> int:

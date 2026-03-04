@@ -1041,14 +1041,15 @@ class PiggyTrade(toga.App):
             await self.main_window.dialog(toga.InfoDialog("Node Connection Issue", connection_msg))
         # Check for mempool box conflict (404 not-found)
         elif "404" in err_msg or "not-found" in err_msg.lower():
-            funny_msg = (
-                "Piggy says: 'Hold your oinks!' 🐷\n\n"
-                "Your wallet is currently in a bit of a scramble! It seems you're trying to spend "
-                "boxes that are already busy in another transaction (mempool conflict).\n\n"
-                "Please wait for your pending trades to confirm first, OR go to the advanced settings "
-                "to turn off mempool options to avoid this digital traffic jam!"
+            box_msg = (
+                "Piggy says: Box Not Found! 🐷🔍\n\n"
+                "The Ergo node cannot find a 'box' (UTXO) that this transaction is trying to spend. "
+                "This usually happens when you have multiple transactions for this address "
+                "still waiting in the mempool (pending).\n\n"
+                "Please wait until all your pending transactions are confirmed OR "
+                "go to 'Advanced Settings' and turn off 'Mempool' for your wallet."
             )
-            await self.main_window.dialog(toga.InfoDialog("Wallet Scramble!", funny_msg))
+            await self.main_window.dialog(toga.InfoDialog("Wallet Issue", box_msg))
         else:
             # Standard error message for everything else
             await self.main_window.dialog(toga.InfoDialog(f"{context} Error", err_msg))
@@ -1220,10 +1221,17 @@ class PiggyTrade(toga.App):
                 self.btn_w_save.text = "Encrypting..."
                 self.btn_w_save.enabled = False
             
-            asyncio.create_task(self._save_wallet_async(name, mnem, pwd, self.sw_w_legacy.value, use_bio))
+            # Identify network from current settings
+            net_type = "mainnet"
+            sel_node_key = self.app_settings.get("selected_node", "Pub1")
+            if ":" in sel_node_key: sel_node_key = sel_node_key.split(":")[0].strip()
+            node_info = self.custom_nodes.get(sel_node_key)
+            if node_info: net_type = node_info.get("network", "mainnet")
+
+            asyncio.create_task(self._save_wallet_async(name, mnem, pwd, self.sw_w_legacy.value, use_bio, net_type))
 
 
-    async def _save_wallet_async(self, name, mnem, pwd, use_legacy=False, use_bio=False):
+    async def _save_wallet_async(self, name, mnem, pwd, use_legacy=False, use_bio=False, net_type="mainnet"):
         try:
             # If bio is ON and password is empty, generate a random local key
             if use_bio and not pwd:
@@ -1232,8 +1240,8 @@ class PiggyTrade(toga.App):
                 pwd = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
                 print(f"[piggytrade] Generated random local key for biometric wallet '{name}'", flush=True)
 
-            print(f"[piggytrade] Deriving address for {name} (legacy={use_legacy})...", flush=True)
-            signer = await asyncio.to_thread(ErgoSigner, self.node_url_value)
+            print(f"[piggytrade] Deriving address for {name} (legacy={use_legacy}, net={net_type})...", flush=True)
+            signer = await asyncio.to_thread(ErgoSigner, self.node_url_value, network_type=net_type)
             public_address = await asyncio.to_thread(signer.get_address, mnem, "", 0, use_legacy)
             print(f"[piggytrade] Derived address: {public_address}", flush=True)
             
@@ -1266,12 +1274,17 @@ class PiggyTrade(toga.App):
                 if iv and encrypted_pwd:
                     self.biometrics_config[name] = {"iv": iv, "data": encrypted_pwd}
                     self._save_json(self.biometrics_config_file, self.biometrics_config)
-                    print(f"[piggytrade] Biometrics enabled for wallet '{name}'", flush=True)
+                print(f"[piggytrade] Biometrics enabled for wallet '{name}'", flush=True)
 
             print(f"[DIALOG] Success: Wallet '{name}' saved.", flush=True)
             await self.main_window.dialog(toga.InfoDialog("Success", f"Wallet '{name}' saved."))
             self.selected_wallet = name
+            
+            # Navigate back to main screen
             self.navigate_to("main")
+            
+            # Trigger a silent background sync to update balances
+            self.fetch_wallet_balances(silent=True)
         except Exception as e:
             print(f"[DIALOG] Error (save wallet): {e}", flush=True)
             await self.main_window.dialog(toga.InfoDialog("Error", str(e)))
