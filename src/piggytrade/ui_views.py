@@ -592,12 +592,17 @@ def build_add_wallet_view(app):
     addr_row.add(app.inp_w_addr); addr_row.add(btn_paste_addr)
     app.box_w_addr.add(addr_row)
 
-    # Save button
+    # Save button and indicator container
     app.btn_w_save = apply_android_border(toga.Button("Encrypt & Save Wallet", style=Pack(color="#555555", background_color="#1C1C1C", margin_left=10, margin_right=15, height=50), on_press=app.save_new_wallet), radius=10)
+    app.ai_add_w = toga.ActivityIndicator(style=Pack(width=30, height=30, margin_top=10, color=COLOR_DANGER))
+    
+    save_container = toga.Box(style=Pack(direction=COLUMN, align_items=CENTER))
+    save_container.add(app.btn_w_save)
+    save_container.add(app.ai_add_w)
 
     main_card.add(app.box_w_mnem)
     main_card.add(app.box_w_addr)
-    main_card.add(app.btn_w_save)
+    main_card.add(save_container)
     
     scroll = toga.ScrollContainer(content=main_card, style=Pack(flex=1))
     box.add(scroll)

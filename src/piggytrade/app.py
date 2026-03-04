@@ -1155,6 +1155,8 @@ class PiggyTrade(toga.App):
         self.update_widget_color(self.btn_n_save, background_color=bg)
 
     async def save_new_wallet(self, widget):
+        if hasattr(self, 'ai_add_w') and self.ai_add_w.is_running: return # Prevent multiple clicks
+        
         name = self.inp_w_name.value.strip()
         is_readonly = self.sw_w_readonly.value
         
@@ -1211,6 +1213,13 @@ class PiggyTrade(toga.App):
                     return
                 print("[piggytrade] Biometric verification successful.", flush=True)
                 
+            # Update UI to show loading state
+            if hasattr(self, "ai_add_w"):
+                self.ai_add_w.start()
+            if hasattr(self, "btn_w_save"):
+                self.btn_w_save.text = "Encrypting..."
+                self.btn_w_save.enabled = False
+            
             asyncio.create_task(self._save_wallet_async(name, mnem, pwd, self.sw_w_legacy.value, use_bio))
 
 
@@ -1267,6 +1276,13 @@ class PiggyTrade(toga.App):
             print(f"[DIALOG] Error (save wallet): {e}", flush=True)
             await self.main_window.dialog(toga.InfoDialog("Error", str(e)))
         finally:
+            # Stop loading state
+            if hasattr(self, "ai_add_w"):
+                self.ai_add_w.stop()
+            if hasattr(self, "btn_w_save"):
+                self.btn_w_save.text = "Encrypt & Save Wallet"
+                self.btn_w_save.enabled = True
+
             # Best effort memory wiping
             if 'mnem' in locals(): del mnem
             if 'pwd' in locals(): del pwd
