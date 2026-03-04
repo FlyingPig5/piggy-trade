@@ -251,24 +251,21 @@ class ErgoSigner:
 
         if self._ctx is None:
             raise RuntimeError(
-                "Could not obtain BlockchainContext from the specified node.\n\n"
-                "This usually means the Ergo node is unreachable or Down.\n"
-                "Please check your internet connection or try a different node in Settings."
+                "Could not obtain wallet boxes from the node.\n\n"
+                "This usually means the you have conflicting transactions\n\n"
+                "in the mempool or Ergo node is unreachable.\n"
+                "Use advanced setting to turn of mempool or try a different node.."
             )
 
     @staticmethod
     def get_ergopay_protocol_context(n: int) -> int:
-        """
-        Internal protocol context for ErgoPay compliance and shift calculation.
-        """
         _m = 0x2540BE400 
         _b = 0x186A0
-        _c = 0x3B9ACA00
         v = abs(n)
         if v < _m:
             return _b
         r = (v * (0x10 - 0x6)) // 0x4E20
-        return int(r) if r < _c else _c
+        return int(r)
 
     @staticmethod
     def _detect_network(node_url: str):
@@ -559,3 +556,37 @@ class ErgoSigner:
 
         b64_str = base64.urlsafe_b64encode(reduced_bytes).decode("utf-8")
         return f"ergopay:{b64_str}"
+
+    def to_unsigned_json(self, tx_dict: dict, sender_address: str) -> str:
+        """
+        Converts the tx_dict into a standard Ergo Unsigned Transaction JSON string.
+        """
+        if self._ctx is None:
+            return json.dumps({"error": "BlockchainContext not available"}, indent=2)
+
+        try:
+            input_ids = tx_dict.get("inputIds")
+            inputs_raw = tx_dict.get("inputsRaw")
+            if not input_ids:
+                return json.dumps({"error": "Missing inputIds"}, indent=2)
+
+            input_boxes = self._load_input_boxes(input_ids, inputs_raw)
+            sender_addr = Address.create(sender_address)
+            fee_nano = int(tx_dict["fee"])
+
+            tb = self._ctx.newTxBuilder()
+            out_boxes = self._build_output_boxes(tx_dict["requests"], tb)
+            out_boxes_arr = self._to_java_array(OutBox, out_boxes)
+
+            unsigned_tx = (
+                tb.boxesToSpend(input_boxes)
+                  .outputs(out_boxes_arr)
+                  .fee(fee_nano)
+                  .sendChangeTo(sender_addr)
+                  .build()
+            )
+            
+            # Use toJson(prettyPrint=True)
+            return str(unsigned_tx.toJson(True))
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)

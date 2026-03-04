@@ -102,6 +102,7 @@ class PiggyTrade(toga.App):
         self.edit_favs_mode = False
         self.current_balances = {"ERG": 0, "tokens": {}}
         self.current_address = "" 
+        self.active_signer = None
 
         # Load saved node & wallet
         saved_node = self.app_settings.get("selected_node", "Select Node")
@@ -355,6 +356,9 @@ class PiggyTrade(toga.App):
             self._clear_cached_view("wallet_selector")
         if view_name == "token_selector":
             self._clear_cached_view("token_selector")
+        if view_name == "add_wallet":
+            # Pop from cache to ensure build_add_wallet_view(self) is called fresh
+            self.cached_views.pop("add_wallet", None)
 
         if view_name not in self.cached_views:
             self.cached_views[view_name] = self.views[view_name]()
@@ -400,7 +404,7 @@ class PiggyTrade(toga.App):
             elif view_name == "add_wallet" and hasattr(self, 'sw_w_readonly'):
 
 
-                self.sw_w_readonly.value = False
+                self.sw_w_readonly.value = True
                 self.on_readonly_toggle(self.sw_w_readonly)
                 if hasattr(self, 'inp_w_name'): self.inp_w_name.value = ""
                 if hasattr(self, 'inp_w_mnem'): self.inp_w_mnem.value = ""
@@ -1052,13 +1056,40 @@ class PiggyTrade(toga.App):
     def on_readonly_toggle(self, widget):
         # Toggle between Mnemonic box and Address box
         if widget.value: # Read-only mode (Standard ErgoPay style)
+            if hasattr(self, 'lbl_w_type'): self.lbl_w_type.text = "Ergopay"
+            # Show Ergopay help, hide Mnemonic help
+            if hasattr(self, 'lbl_w_help_rec'): 
+                self.lbl_w_help_rec.style.visibility = 'visible'
+                try: del self.lbl_w_help_rec.style.height
+                except: pass
+            if hasattr(self, 'lbl_w_help_erg'): 
+                self.lbl_w_help_erg.style.visibility = 'visible'
+                try: del self.lbl_w_help_erg.style.height
+                except: pass
+            if hasattr(self, 'lbl_w_help_mnem'): 
+                self.lbl_w_help_mnem.style.visibility = 'hidden'
+                self.lbl_w_help_mnem.style.height = 0
+            
             self.box_w_mnem.style.visibility = 'hidden'
             self.box_w_mnem.style.height = 0
             # Show address box
             self.box_w_addr.style.visibility = 'visible'
-            self.box_w_addr.style.height = 80 
+            self.box_w_addr.style.height = 100 
             if hasattr(self, 'inp_w_addr'): self.inp_w_addr.enabled = True
         else: # Mnemonic mode
+            if hasattr(self, 'lbl_w_type'): self.lbl_w_type.text = "Mnemonic"
+            # Hide Ergopay help, show Mnemonic help
+            if hasattr(self, 'lbl_w_help_rec'): 
+                self.lbl_w_help_rec.style.visibility = 'hidden'
+                self.lbl_w_help_rec.style.height = 0
+            if hasattr(self, 'lbl_w_help_erg'): 
+                self.lbl_w_help_erg.style.visibility = 'hidden'
+                self.lbl_w_help_erg.style.height = 0
+            if hasattr(self, 'lbl_w_help_mnem'): 
+                self.lbl_w_help_mnem.style.visibility = 'visible'
+                try: del self.lbl_w_help_mnem.style.height
+                except: pass
+            
             self.box_w_mnem.style.visibility = 'visible'
             try:
                 del self.box_w_mnem.style.height # Auto height
@@ -1331,6 +1362,13 @@ class PiggyTrade(toga.App):
         self.set_loading(True)
         try:
             client = NodeClient(self.node_url_value)
+            
+            # Proactively cache/initialize ErgoSigner for this node to speed up signing later
+            # and to generate the standard Unsigned Transaction JSON for review.
+            if not self.active_signer or self.active_signer.node_url != self.node_url_value:
+                print(f"[piggytrade] Initializing ErgoSigner for {self.node_url_value}...", flush=True)
+                self.active_signer = await asyncio.to_thread(ErgoSigner, self.node_url_value)
+
             trader = Trader(client, TxBuilder(client, wallet_addr), self.token_manager.tokens, None)
             
             trader._auth_link = self._get_node_auth_link()
@@ -1414,7 +1452,13 @@ class PiggyTrade(toga.App):
                 if out_service.endswith('.'): out_service = out_service[:-1]
                 self.lbl_rev_fees.text = f"Miner Fee: {fee:.3f} + Service: {out_service} ERG"
             
-            self.lbl_tx_json.value = json.dumps(tx_dict, indent=2)
+            # Replace the internal requests JSON with the actual Unsigned Transaction JSON
+            print("[piggytrade] Generating Unsigned Transaction JSON...", flush=True)
+            unsigned_json = await asyncio.to_thread(
+                self.active_signer.to_unsigned_json,
+                tx_dict, wallet_addr
+            )
+            self.lbl_tx_json.value = unsigned_json
             
 
             readable_text = self._generate_readable_tx(tx_dict)
@@ -1513,71 +1557,108 @@ class PiggyTrade(toga.App):
         return name, decimals
 
     def _generate_readable_tx(self, tx_dict):
+        """
+        Calculates net changes for each address in the transaction to provide 
+        a user-friendly summary of what is actually leaving and entering the wallet.
+        """
         lines = []
         
-        # --- INPUTS ---
+        # 1. Accumulate net changes per address
+        # Structure: deltas[address] = {"ERG": nanoErgs, "tokens": {tokenId: amount}}
+        deltas = {}
+        
+        # Process Inputs (what is being spent/consumed)
         input_boxes = tx_dict.get("input_boxes", [])
-        if input_boxes:
-            lines.append("=== INPUTS: WHAT IS BEING SENT ===")
-            for i, box in enumerate(input_boxes):
-                addr = box.get("address", "???")
-                val_erg = box.get("value", 0) / 1e9
-                short_addr = f"{addr[:8]}...{addr[-8:]}" if len(addr) > 20 else addr
+        for box in input_boxes:
+            addr = box.get("address", "???")
+            if addr not in deltas:
+                deltas[addr] = {"ERG": 0, "tokens": {}}
+            
+            deltas[addr]["ERG"] -= box.get("value", 0)
+            for asset in box.get("assets", []):
+                tid = asset.get("tokenId")
+                if tid:
+                    deltas[addr]["tokens"][tid] = deltas[addr]["tokens"].get(tid, 0) - asset.get("amount", 0)
+                    
+        # Process Outputs (what is being created/received)
+        requests = tx_dict.get("requests", [])
+        for req in requests:
+            addr = req.get("address", "???")
+            if addr not in deltas:
+                deltas[addr] = {"ERG": 0, "tokens": {}}
                 
-                label = "User Wallet" if addr == self.current_address else "Contract / Pool"
-                lines.append(f"  {label} #{i+1}:")
-                lines.append(f"    From: {short_addr}")
-                out_val = f"{val_erg:,.9f}".rstrip('0').rstrip('.')
-                if out_val.endswith('.'): out_val = out_val[:-1]
-                lines.append(f"    Value: {out_val} ERG")
+            deltas[addr]["ERG"] += req.get("value", 0)
+            for asset in req.get("assets", []):
+                tid = asset.get("tokenId")
+                if tid:
+                    deltas[addr]["tokens"][tid] = deltas[addr]["tokens"].get(tid, 0) + asset.get("amount", 0)
+        
+        # 2. Identify Miner Fee (Difference between total nanoErgs in and out)
+        total_in = sum(box.get("value", 0) for box in input_boxes)
+        # Note: requests don't explicitly include the miner fee as a request in this builder
+        total_out = sum(req.get("value", 0) for req in requests)
+        # However, some builders might put fee in requests or tx_dict. Let's trust tx_dict['fee'] if it exists.
+        miner_fee_nano = tx_dict.get("fee", total_in - total_out)
+        
+        # 3. Format the display
+        lines.append("=== TRANSACTION SUMMARY (Net Changes) ===")
+        lines.append("")
+        
+        # Sort so user wallet is always first
+        sorted_addrs = sorted(deltas.keys(), key=lambda a: 0 if a == self.current_address else 1)
+        
+        for addr in sorted_addrs:
+            d = deltas[addr]
+            # Check if there's any non-zero change
+            has_tokens = any(v != 0 for v in d["tokens"].values())
+            if d["ERG"] == 0 and not has_tokens:
+                continue
+            
+            if addr == self.current_address:
+                label = "YOUR WALLET"
+            elif "2iH9" in addr: # Common mainnet fee addr pattern, though usually omitted from requests
+                label = "FEES"
+            elif any(box.get("address") == addr for box in input_boxes if addr != self.current_address):
+                label = "CONTRACT / POOL"
+            else:
+                label = "EXTERNAL ADDRESS"
                 
-                assets = box.get("assets", [])
-                if assets:
-                    lines.append("    Assets:")
-                    for asset in assets:
-                        tid = asset.get("tokenId", "")
-                        amount = asset.get("amount", 0)
-                        name, decimals = self._get_token_name_and_decimals(tid)
-                        
-                        fmt_amt = amount / (10**decimals)
-                        display_amt = f"{fmt_amt:,.{min(decimals, 8)}f}".rstrip('0').rstrip('.') if decimals > 0 else f"{amount:,}"
-                        if display_amt.endswith('.'): display_amt = display_amt[:-1]
-                        lines.append(f"      - {display_amt} {name}")
-                lines.append("")
-            lines.append("-" * 36)
+            short_addr = f"{addr[:8]}...{addr[-8:]}" if len(addr) > 20 else addr
+            lines.append(f"{label}:")
+            if label != "FEES":
+                lines.append(f"  Addr: {short_addr}")
+            
+            # Show ERG change
+            if d["ERG"] != 0:
+                verb = "[RECEIVE]" if d["ERG"] > 0 else "[SEND]"
+                # Use absolute value for display
+                abs_val = abs(d["ERG"]) / 1e9
+                fmt_val = f"{abs_val:,.9f}".rstrip('0').rstrip('.')
+                if fmt_val.endswith('.'): fmt_val = fmt_val[:-1]
+                lines.append(f"  {verb} {fmt_val} ERG")
+            
+            # Show Token changes
+            for tid, amt in d["tokens"].items():
+                if amt == 0: continue
+                verb = "[RECEIVE]" if amt > 0 else "[SEND]"
+                name, decimals = self._get_token_name_and_decimals(tid)
+                
+                abs_amt = abs(amt)
+                fmt_amt_val = abs_amt / (10**decimals)
+                display_amt = f"{fmt_amt_val:,.{min(decimals, 8)}f}".rstrip('0').rstrip('.') if decimals > 0 else f"{abs_amt:,}"
+                if display_amt.endswith('.'): display_amt = display_amt[:-1]
+                
+                lines.append(f"  {verb} {display_amt} {name}")
+            
             lines.append("")
 
-        # --- OUTPUTS ---
-        lines.append("=== OUTPUTS: WHAT IS BEING RECEIVED ===")
-        requests = tx_dict.get("requests", [])
-        for i, req in enumerate(requests):
-            addr = req.get("address", "???")
-            val_erg = req.get("value", 0) / 1e9
-            short_addr = f"{addr[:8]}...{addr[-8:]}" if len(addr) > 20 else addr
-            
-            label = "To Wallet (Change)" if addr == self.current_address else "To Contract / Pool"
-            
-            lines.append(f"  {label} #{i+1}:")
-            lines.append(f"    Addr: {short_addr}")
-            out_val = f"{val_erg:,.9f}".rstrip('0').rstrip('.')
-            if out_val.endswith('.'): out_val = out_val[:-1]
-            lines.append(f"    Value: {out_val} ERG")
-            
-            assets = req.get("assets", [])
-            if assets:
-                lines.append("    Assets:")
-                for asset in assets:
-                    tid = asset.get("tokenId", "")
-                    amount = asset.get("amount", 0)
-                    name, decimals = self._get_token_name_and_decimals(tid)
-                    
-                    fmt_amt = amount / (10**decimals)
-                    display_amt = f"{fmt_amt:,.{min(decimals, 8)}f}".rstrip('0').rstrip('.') if decimals > 0 else f"{amount:,}"
-                    if display_amt.endswith('.'): display_amt = display_amt[:-1]
-                    
-                    lines.append(f"      - {display_amt} {name}")
+        # Add Miner Fee explicitly for clarity if not already shown via a 2iH9 address
+        if miner_fee_nano > 0 and not any("2iH9" in a for a in deltas):
+            fee_erg = miner_fee_nano / 1e9
+            lines.append("MINER FEE:")
+            lines.append(f"  [SEND] {fee_erg:,.9f} ERG".rstrip('0').rstrip('.'))
             lines.append("")
-        
+
         return "\n".join(lines).strip()
 
     def show_password_input(self, widget):
@@ -1590,11 +1671,40 @@ class PiggyTrade(toga.App):
         self.btn_rev_show_pass.style.visibility = 'hidden'
         self.btn_rev_show_pass.style.height = 0
 
+    def _open_url(self, url):
+        print(f"[piggytrade] Opening URL: {url}", flush=True)
+        opened = False
+        if IS_ANDROID:
+            try:
+                from java import jclass
+                Intent = jclass('android.content.Intent')
+                Uri = jclass('android.net.Uri')
+                MainActivity = jclass('org.beeware.android.MainActivity')
+                activity = MainActivity.singletonThis
+                intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                activity.startActivity(intent)
+                opened = True
+                print("[piggytrade] Android Intent fired for URL.", flush=True)
+            except Exception as e:
+                print(f"[piggytrade] Android Intent failed: {e}", flush=True)
+
+        if not opened:
+            try:
+                import webbrowser
+                success = webbrowser.open(url)
+                # On some platforms success might be True, but it's not always reliable
+                if success: opened = True
+            except Exception as e:
+                print(f"[piggytrade] webbrowser.open failed: {e}", flush=True)
+        
+        return opened
+
     def open_tx_at_sigmaspace(self, widget):
         tx_id = getattr(widget, "_tx_id", None)
         if tx_id:
             url = f"https://sigmaspace.io/en/transaction/{tx_id}"
-            webbrowser.open(url)
+            self._open_url(url)
 
     async def copy_tx_json(self, widget):
         if hasattr(self, 'lbl_tx_json'):
@@ -1697,10 +1807,12 @@ class PiggyTrade(toga.App):
             
             execute = not self.is_simulation
             use_legacy = encrypted_data.get("use_legacy", False)
-            signer = await asyncio.to_thread(ErgoSigner, self.node_url_value)
+            
+            if not self.active_signer or self.active_signer.node_url != self.node_url_value:
+                self.active_signer = await asyncio.to_thread(ErgoSigner, self.node_url_value)
             
             tx_id, err = await asyncio.to_thread(
-                signer.sign_tx_dict,
+                self.active_signer.sign_tx_dict,
                 self.prepared_tx_dict, decrypted_mnemonic, "", 0, execute, use_legacy
             )
             
@@ -1764,9 +1876,11 @@ class PiggyTrade(toga.App):
         self.btn_confirm_tx.enabled = False
         self.set_loading(True)
         try:
-            signer = await asyncio.to_thread(ErgoSigner, self.node_url_value)
+            if not self.active_signer or self.active_signer.node_url != self.node_url_value:
+                self.active_signer = await asyncio.to_thread(ErgoSigner, self.node_url_value)
+                
             uri = await asyncio.to_thread(
-                signer.reduce_tx_for_ergopay,
+                self.active_signer.reduce_tx_for_ergopay,
                 self.prepared_tx_dict, self.current_address, self.use_pre1627_value
             )
             
@@ -1797,28 +1911,7 @@ class PiggyTrade(toga.App):
             ))
             
             if result:
-                opened = False
-                if IS_ANDROID:
-                    try:
-                        from java import jclass
-                        Intent = jclass('android.content.Intent')
-                        Uri = jclass('android.net.Uri')
-                        MainActivity = jclass('org.beeware.android.MainActivity')
-                        activity = MainActivity.singletonThis
-                        intent = Intent(Intent.ACTION_VIEW, Uri.parse(uri))
-                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        activity.startActivity(intent)
-                        opened = True
-                        print("[piggytrade] Fired Android Intent for ergopay URI.", flush=True)
-                    except Exception as ie:
-                        print(f"[piggytrade] Android Intent failed: {ie}", flush=True)
-
-                if not opened:
-                    import webbrowser
-                    success = webbrowser.open(uri)
-                    if not success:
-                        print("[piggytrade] webbrowser.open failed for ergopay URI.", flush=True)
-
+                opened = self._open_url(uri)
                 if not opened:
                     # Show copy-to-clipboard fallback dialog only if Intent didn't fire
                     try:

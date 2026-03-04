@@ -47,7 +47,7 @@ The app comes prepopulated with several public Ergo nodes. However, for maximum 
 
 ### 5. Fees
 * Under 10 ERG - fee of 0.0001
-* Over 10 ERG - fee is 0.05% of up to max 1 ERG, that's CHEAP!!
+* Over 10 ERG - fee is 0.05%, that's CHEAP!!
 * Token to Token trades are free!
 
 
