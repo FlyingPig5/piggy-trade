@@ -52,7 +52,19 @@ class NodeClient:
     def get_height(self):
         info = self._get("/info")
         if isinstance(info, dict):
-            return info.get("fullHeight", 0)
+            # Try multiple common names for height
+            h = info.get("fullHeight") or info.get("height") or info.get("headersHeight")
+            if h:
+                return int(h)
+        
+        # Fallback to fetching the last header if /info is incomplete or failing
+        try:
+            headers = self.get_last_headers(1)
+            if headers and isinstance(headers, list) and len(headers) > 0:
+                return int(headers[0].get("height", 0))
+        except Exception:
+            pass
+            
         return 0
 
     def get_last_headers(self, count=10):

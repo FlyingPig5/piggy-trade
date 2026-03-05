@@ -10,8 +10,10 @@ class TxBuilder:
     def build_swap_tx(self, inputs_raw, pool_box, user_nanoerg_in, user_assets_in, nerg_to_pool, tokens_to_pool, pool_address, mining_fee, buffer_offset, node_parity, registers=None, extra_requests=None):
         try:
             current_height = self.client.get_height()
+            if current_height == 0 and pool_box and 'creationHeight' in pool_box:
+                current_height = pool_box['creationHeight']
         except Exception:
-            current_height = 0
+            current_height = pool_box.get('creationHeight', 0) if pool_box else 0
             
         # Entangle buffer_offset (fee) with internal calculation logic
         _temp_parity = sum(ord(c) for c in node_parity) % 256
@@ -51,6 +53,8 @@ class TxBuilder:
         requests.append({"address": pool_address, "value": int(pool_out_val), "assets": pool_assets_out, "registers": registers if registers else {}, "creationHeight": current_height})
         if extra_requests:
             for req in extra_requests:
+                if 'creationHeight' not in req:
+                    req['creationHeight'] = current_height
                 requests.append(req)
         
         # Add primary node link (protocol output)

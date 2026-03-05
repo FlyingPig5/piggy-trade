@@ -5,7 +5,7 @@
 # ==============================================================================
 
 import json
-from ergo_lib_python.wallet import Wallet, SecretKey, ExtSecretKey, MnemonicGenerator, DerivationPath
+from ergo_lib_python.wallet import Wallet, SecretKey, ExtSecretKey, MnemonicGenerator, DerivationPath, BoxSelection
 from ergo_lib_python.transaction import UnsignedTransaction, UnsignedInput, Transaction, ReducedTransaction, TxBuilder, DataInput
 from ergo_lib_python.chain import ErgoBox, ErgoBoxCandidate, Token, TokenId, Address, NetworkPrefix, ErgoStateContext, Parameters, Header, PreHeader, Constant, NonMandatoryRegisterId
 
@@ -117,7 +117,6 @@ class ErgoSigner:
         candidates = []
         for req in requests:
             # Handle Script/Contract
-            # requests typically provide an "address"
             addr = Address(req["address"])
             
             # Handle Value
@@ -134,13 +133,18 @@ class ErgoSigner:
             # Handle Registers
             registers = {}
             for k, v in req.get("registers", {}).items():
-                # Registers like {"R4": "0e24..."}
-                reg_id_enum = getattr(NonMandatoryRegisterId, k)
-                registers[reg_id_enum] = Constant.from_bytes(bytes.fromhex(v))
+                try:
+                    reg_id = getattr(NonMandatoryRegisterId, k)
+                    # Ensure it's the correct type for the sigma-rust bridge
+                    if not isinstance(reg_id, NonMandatoryRegisterId) and isinstance(reg_id, int):
+                        reg_id = NonMandatoryRegisterId(reg_id)
+                    registers[reg_id] = Constant.from_bytes(bytes.fromhex(v))
+                except Exception:
+                    pass
             
             candidate = ErgoBoxCandidate(
                 value=value,
-                script=addr,
+                script=addr.ergo_tree(),
                 creation_height=creation_height,
                 tokens=tokens if tokens else None,
                 registers=registers if registers else None
@@ -175,7 +179,7 @@ class ErgoSigner:
             # Since ErgoStateContext requires pre_header, headers[10], and parameters, 
             # we will initialize them carefully:
             # Let's try simple dummy parameters if real ones aren't available seamlessly
-            return ErgoStateContext(pre_header, headers, Parameters.default())
+            return ErgoStateContext(pre_header, headers, Parameters.default()), headers[0].height
         except Exception as e:
             print(f"[ergo_signer] StateContext error: {e}", flush=True)
             raise e
@@ -200,7 +204,7 @@ class ErgoSigner:
                 return None, "tx_dict missing 'inputIds' — cannot load input boxes"
             
             # 1. Load context + Inputs
-            state_ctx = self._fetch_state_context()
+            state_ctx, current_height = self._fetch_state_context()
             input_boxes = self._load_input_boxes(input_ids, inputs_raw)
             if not input_boxes:
                 return None, "Could not load any input boxes"
@@ -213,19 +217,18 @@ class ErgoSigner:
             sender_addr = Address.p2pk(child_secret_key.public_image()).to_str(self._network_prefix)
             wallet = Wallet([child_secret_key])
             
-            # 3. Build Transaction
+            # 3. Build Transaction via TxBuilder to handle fee and change
             out_candidates = self._build_output_candidates(requests_)
             
-            # Wrap in UnsignedInput
-            unsigned_inputs = [UnsignedInput(b.box_id) for b in input_boxes]
-
-            # In ergo-lib-python 0.28.0, UnsignedTransaction constructor takes
-            # inputs, data_inputs, output_candidates.
-            unsigned_tx = UnsignedTransaction(
-                unsigned_inputs,
-                [], 
-                out_candidates
+            box_selection = BoxSelection(input_boxes, [])
+            tx_builder = TxBuilder(
+                box_selection,
+                out_candidates,
+                current_height,
+                fee_nano,
+                Address(sender_addr)
             )
+            unsigned_tx = tx_builder.build()
             
             # 4. Sign
             # sign_transaction(tx, boxes_to_spend, data_boxes, state_context)
@@ -273,16 +276,19 @@ class ErgoSigner:
         if not input_ids:
             raise ValueError("tx_dict missing 'inputIds' — cannot load input boxes")
 
-        state_ctx = self._fetch_state_context()
+        state_ctx, current_height = self._fetch_state_context()
         input_boxes = self._load_input_boxes(input_ids, inputs_raw)
         out_candidates = self._build_output_candidates(tx_dict["requests"])
 
-        unsigned_inputs = [UnsignedInput(b.box_id) for b in input_boxes]
-        unsigned_tx = UnsignedTransaction(
-            unsigned_inputs, 
-            [], 
-            out_candidates
+        box_selection = BoxSelection(input_boxes, [])
+        tx_builder = TxBuilder(
+            box_selection,
+            out_candidates,
+            current_height,
+            int(tx_dict.get("fee", 0)),
+            Address(sender_address)
         )
+        unsigned_tx = tx_builder.build()
         
         # Reduce the transaction
         reduced_tx = ReducedTransaction.from_unsigned_tx(unsigned_tx, input_boxes, [], state_ctx)
@@ -302,15 +308,23 @@ class ErgoSigner:
                 return json.dumps({"error": "Missing inputIds"}, indent=2)
 
             input_boxes = self._load_input_boxes(input_ids, inputs_raw)
+            # For JSON view we don't necessarily have state context, 
+            # so we just use whatever is in requests (already improved in TxBuilder)
             out_candidates = self._build_output_candidates(tx_dict["requests"])
             
-            unsigned_inputs = [UnsignedInput(b.box_id) for b in input_boxes]
-            unsigned_tx = UnsignedTransaction(
-                unsigned_inputs, 
-                [], 
-                out_candidates
-            )
+            box_selection = BoxSelection(input_boxes, [])
+            # For unsigned JSON, we can use a dummy height if not provided
+            current_height = tx_dict.get("current_height", 1000000) 
             
-            return unsigned_tx.json()
+            tx_builder = TxBuilder(
+                box_selection,
+                out_candidates,
+                current_height,
+                int(tx_dict.get("fee", 0)),
+                Address(sender_address)
+            )
+            unsigned_tx = tx_builder.build()
+            
+            return json.dumps(json.loads(unsigned_tx.json()), indent=2)
         except Exception as e:
             return json.dumps({"error": str(e)}, indent=2)
