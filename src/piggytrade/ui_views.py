@@ -174,7 +174,7 @@ def build_main_view(app):
     wallet_card.add(wallet_title_row)
     
     # Aligned with Interactive Rows (20px left margin)
-    w_row1 = toga.Box(style=Pack(direction=ROW, align_items=CENTER, margin_bottom=5, margin_left=20, justify_content=START))
+    w_row1 = toga.Box(style=Pack(direction=ROW, align_items=CENTER, margin_bottom=5, margin_left=20, margin_right=20, justify_content=START))
     
     # Custom Wallet Selector Box
     display_wallet = app.selected_wallet if app.selected_wallet else "Select Wallet"
@@ -185,7 +185,7 @@ def build_main_view(app):
         else:
             display_wallet = app.selected_wallet
         
-    app.btn_wallet_sel = toga.Box(style=Pack(direction=ROW, align_items=CENTER, width=290, height=50, background_color=COLOR_INPUT_BG))
+    app.btn_wallet_sel = toga.Box(style=Pack(direction=ROW, align_items=CENTER, flex=1, height=50, background_color=COLOR_INPUT_BG))
     app.btn_wallet_sel = apply_android_border(app.btn_wallet_sel, bg_color=COLOR_INPUT_BG, border_color="#535C6E", border_width=1, radius=12, h_padding=25, v_padding=5)
     
     app.lbl_selected_wallet = toga.Label(display_wallet, style=Pack(color="#FFFFFF", font_size=FONT_SIZE_MD, flex=1, background_color="transparent", margin_left=10))
@@ -204,10 +204,10 @@ def build_main_view(app):
     w_row1.add(app.btn_wallet_sel); w_row1.add(btn_add_w)
     
     # Aligned with interactive rows
-    w_row2 = toga.Box(style=Pack(direction=ROW, align_items=CENTER, margin_bottom=10, margin_left=20, justify_content=START))
+    w_row2 = toga.Box(style=Pack(direction=ROW, align_items=CENTER, margin_bottom=10, margin_left=20, margin_right=20, justify_content=START))
     # Widen address field to 290px - Match dark navy button style
     app.inp_address = apply_android_border(
-        toga.TextInput(placeholder="Enter wallet Address", readonly=True, style=Pack(width=290, height=50, font_size=FONT_SIZE_BASE, color=COLOR_INPUT_TEXT, background_color=COLOR_INPUT_BG), on_change=app.on_address_input_change),
+        toga.TextInput(placeholder="Enter wallet Address", readonly=True, style=Pack(flex=1, height=50, font_size=FONT_SIZE_BASE, color=COLOR_INPUT_TEXT, background_color=COLOR_INPUT_BG), on_change=app.on_address_input_change),
         bg_color=COLOR_INPUT_BG, border_color="#535C6E", v_padding=0, radius=10
     )
     btn_view_w = apply_android_border(
@@ -237,11 +237,11 @@ def build_main_view(app):
     font_sel = {"font_size": FONT_SIZE_MD}
 
     # FROM CARD - Aligned (20px left margin)
-    from_card = toga.Box(style=Pack(direction=COLUMN, margin_bottom=0, margin_left=20, margin_right=10))
+    from_card = toga.Box(style=Pack(direction=COLUMN, margin_bottom=0, margin_left=20, margin_right=20))
     from_card = apply_android_border(from_card, bg_color=COLOR_CARD, border_color="transparent", radius=15, v_padding=0)
     
     # Merged From Box (Amount + Asset selector) - Width 348 to match wallet row (290+50+8)
-    app.from_top_row = toga.Box(style=Pack(direction=ROW, align_items=CENTER, width=348, height=65, background_color=COLOR_INPUT_BG))
+    app.from_top_row = toga.Box(style=Pack(direction=ROW, align_items=CENTER, flex=1, height=65, background_color=COLOR_INPUT_BG))
     app.from_top_row = apply_android_border(app.from_top_row, bg_color=COLOR_INPUT_BG, border_color="#535C6E", border_width=1, radius=10)
     
     app.inp_amount = apply_android_border(toga.TextInput(value=app.last_amount, placeholder="0.0", style=Pack(flex=1, font_size=FONT_SIZE_XL, color=COLOR_INPUT_TEXT, background_color="transparent"), on_change=app.on_amount_change), is_numeric=True, bg_color="transparent", border_width=0, h_padding=15, v_padding=5, text_color="#FFFFFF", radius=10)
@@ -288,11 +288,11 @@ def build_main_view(app):
     mid_row.add(btn_swap_box)
 
     # TO CARD - Aligned (20px left margin)
-    to_card = toga.Box(style=Pack(direction=COLUMN, margin_bottom=10, margin_left=20, margin_right=10))
+    to_card = toga.Box(style=Pack(direction=COLUMN, margin_bottom=10, margin_left=20, margin_right=20))
     to_card = apply_android_border(to_card, bg_color=COLOR_CARD, border_color="transparent", radius=15, v_padding=0)
     
     # Merged To Box (Quote + Asset selector) - Width 348 to match wallet row (290+50+8)
-    app.to_top_row = toga.Box(style=Pack(direction=ROW, align_items=CENTER, width=348, height=65, background_color=COLOR_INPUT_BG))
+    app.to_top_row = toga.Box(style=Pack(direction=ROW, align_items=CENTER, flex=1, height=65, background_color=COLOR_INPUT_BG))
     app.to_top_row = apply_android_border(app.to_top_row, bg_color=COLOR_INPUT_BG, border_color="#535C6E", border_width=1, radius=12)
     
     app.lbl_quote = toga.Label("0.0", style=Pack(color=LBL_QUOTE_FONT_COLOR, background_color="transparent", font_size=FONT_SIZE_XL, flex=1, padding_left=15))
