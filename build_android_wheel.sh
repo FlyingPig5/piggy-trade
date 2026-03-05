@@ -6,7 +6,7 @@ set -e
 
 # Resolve the project root dynamically (works regardless of username or path)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OUTPUT_DIR="$SCRIPT_DIR/dev_tools/wheels"
+OUTPUT_DIR="$SCRIPT_DIR/src/piggytrade/resources/bin"
 
 TARGET_ARCH="aarch64"
 
