@@ -21,7 +21,22 @@ echo "📥 Installing requirements (this includes Briefcase)..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# 4. Create or Update the Android project
+# 4. Check for Native Ergo Wheel
+echo "🔍 Checking for native ergo-lib-python wheel..."
+WHEEL_DIR="src/piggytrade/resources/bin"
+if ls $WHEEL_DIR/ergo_lib_python*-android_24_arm64_v8a.whl 1> /dev/null 2>&1; then
+    echo "   ✅ Native Android wheel found."
+else
+    echo "   ⚠️  Native Android wheel missing! Attempting to build..."
+    if [ -f "build_android_wheel.sh" ]; then
+        bash build_android_wheel.sh
+    else
+        echo "   ❌ build_android_wheel.sh not found! Cannot build native Rust bindings."
+        exit 1
+    fi
+fi
+
+# 5. Create or Update the Android project
 echo "🏗️ Updating Android project and resources..."
 briefcase update android --update-resources
 
