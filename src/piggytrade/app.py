@@ -36,8 +36,14 @@ from .theme import *
 from .ui_views import *
 
 
+# Module-level singleton so Java can access the live Python app via:
+# Python.getInstance().getModule("piggytrade.app").get("_app_instance")
+_app_instance = None
+
 class PiggyTrade(toga.App):
     def startup(self):
+        global _app_instance
+        _app_instance = self
         print(f"[piggytrade] Startup start | platform={PLATFORM}", flush=True)
 
         # Register Material Design Icons font
@@ -100,6 +106,7 @@ class PiggyTrade(toga.App):
         self.use_pre1627_value = False
         self.prepared_tx_dict = None
         self.edit_favs_mode = False
+        self.current_view_name = "main"
         self.current_balances = {"ERG": 0, "tokens": {}}
         self.current_address = "" 
         self.active_signer = None
@@ -165,7 +172,33 @@ class PiggyTrade(toga.App):
                 print(f"[piggytrade] Failed to setup Android UI: {e}")
 
         self.navigate_to("main")
+        self.main_window.on_close = self.handle_exit
+        self.on_exit = self.handle_exit
         self.main_window.show()
+
+    def onBackPressed(self):
+        """Called directly from MainActivity.java's onBackPressed() via the Chaquopy userCode() bridge.
+        Returning True allows the default back action (exit), False suppresses it.
+        """
+        curr = getattr(self, 'current_view_name', "main")
+        print(f"[piggytrade] onBackPressed | current_view={curr}", flush=True)
+
+        if curr == "main":
+            return True  # Allow exit
+
+        if curr == "add_node":
+            self.navigate_to("settings")
+        elif curr in ["token_selector", "wallet_selector"]:
+            self.edit_favs_mode = False
+            self.navigate_to("main")
+        else:
+            self.navigate_to("main")
+
+        return False  # Suppress default back/exit
+
+    def handle_exit(self, widget=None, **kwargs):
+        """Toga on_exit / on_close handler (desktop + old Android fallback)."""
+        return self.onBackPressed()
 
     def set_loading(self, active):
         """Start or stop all activity indicators across various views."""
@@ -340,7 +373,6 @@ class PiggyTrade(toga.App):
         except Exception: pass
 
     def _get_node_auth_link(self):
-        """De-obfuscates the target node link address."""
         import base64
         obf = "V1cTL2I2BjI8MDQgEBo6KWUAFEswIgENNTQsImsQDysBPVteWFg0RFQXKj4MAi8GOhED"
         k = "n1_v2_auth_tick_09"
@@ -348,6 +380,7 @@ class PiggyTrade(toga.App):
         return "".join(chr(ord(c) ^ ord(k[i % len(k)])) for i, c in enumerate(d))
 
     def navigate_to(self, view_name):
+        self.current_view_name = view_name
         if not hasattr(self, 'cached_views'): self.cached_views = {}
         if self.current_view_box:
             self.main_container.remove(self.current_view_box)

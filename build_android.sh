@@ -25,6 +25,17 @@ pip install -r requirements.txt
 echo "🏗️ Updating Android project and resources..."
 briefcase update android --update-resources
 
+# 4a. Apply custom Java patches (back button fix etc.)
+echo "🔧 Applying custom Java patches..."
+MAIN_ACTIVITY_SRC="android_patches/MainActivity.java"
+MAIN_ACTIVITY_DST="build/piggytrade/android/gradle/app/src/main/java/org/beeware/android/MainActivity.java"
+if [ -f "$MAIN_ACTIVITY_SRC" ] && [ -f "$MAIN_ACTIVITY_DST" ]; then
+    cp "$MAIN_ACTIVITY_SRC" "$MAIN_ACTIVITY_DST"
+    echo "   ✅ MainActivity.java patched (back button fix)"
+else
+    echo "   ⚠️  Skipping MainActivity patch (source or dest not found)"
+fi
+
 echo "🔏 Injecting Biometric Dependencies..."
 GRADLE_FILE="build/piggytrade/android/gradle/app/build.gradle"
 if [ -f "$GRADLE_FILE" ]; then

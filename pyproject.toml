@@ -40,7 +40,7 @@ requires = [
     "cryptography==42.0.8",
 ]
 permissions = ["INTERNET", "USE_BIOMETRIC"]
-extra_manifest_application_attributes = { "android:usesCleartextTraffic" = "true" }
+extra_manifest_application_attributes = { "android:usesCleartextTraffic" = "true", "android:enableOnBackInvokedCallback" = "true" }
 build_gradle_dependencies = [
     "androidx.appcompat:appcompat:1.6.1",
     "androidx.multidex:multidex:2.0.1",
