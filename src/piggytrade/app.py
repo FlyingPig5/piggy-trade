@@ -27,7 +27,7 @@ from .config import NODES, TOKENS_URL
 from .node_client import NodeClient
 from .tx_builder import TxBuilder
 from .trader_ergpy import Trader
-from .ergpy_signer import ErgoSigner
+from .ergo_signer import ErgoSigner
 from .token_manager import TokenManager
 from .trade_mapper import TradeMapper
 from .biometrics import BiometricHelper, KeystoreHelper

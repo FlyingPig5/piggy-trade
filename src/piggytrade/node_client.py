@@ -48,12 +48,23 @@ class NodeClient:
         except Exception as e:
             return {"error": "exception", "reason": str(e)}
 
-    # --- Height ---
+    # --- Height & State Context ---
     def get_height(self):
         info = self._get("/info")
         if isinstance(info, dict):
             return info.get("fullHeight", 0)
         return 0
+
+    def get_last_headers(self, count=10):
+        """Fetch the last N block headers."""
+        headers = self._get(f"/blocks/lastHeaders/{count}")
+        if isinstance(headers, list):
+            return headers
+        return []
+
+    def get_pre_header(self):
+        """Fetch the current parameters/candidate block header for transaction building."""
+        return self._get("/mining/candidateBlock")
 
     def get_my_assets(self, address, check_mempool=True):
         """

@@ -33,9 +33,11 @@ if not IS_ANDROID:
             return f"<MockJava:{self._name}>"
 
     if 'java' not in sys.modules:
+        class _DummyProxy:
+            pass
         _java = _types.ModuleType('java')
-        _java.static_proxy = lambda *args, **kw: (lambda cls: cls)
-        _java.dynamic_proxy = lambda *args, **kw: (lambda cls: cls)
+        _java.static_proxy = lambda *args, **kw: _DummyProxy
+        _java.dynamic_proxy = lambda *args, **kw: _DummyProxy
         _java.Override = lambda *args, **kw: (lambda fn: fn)
         _java.jvoid = _MockJavaClass("jvoid")
         _java.jint = _MockJavaClass("jint")

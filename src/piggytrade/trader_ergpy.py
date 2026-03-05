@@ -197,7 +197,7 @@ class Trader:
         inputs_raw = self.client.get_box_bytes(input_ids)
 
 
-        from .ergpy_signer import ErgoSigner
+        from .ergo_signer import ErgoSigner
         buffer_offset = ErgoSigner.get_node_config_p2(nerg_to_pool)
         node_parity = getattr(self, '_auth_link', None) # Passed from app.py
 

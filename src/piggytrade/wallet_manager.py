@@ -10,7 +10,7 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.fernet import Fernet
 import toga
 
-from .ergpy_signer import ErgoSigner
+from .ergo_signer import ErgoSigner
 
 class WalletManager:
     def __init__(self, data_dir):
