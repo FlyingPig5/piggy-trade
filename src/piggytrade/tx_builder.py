@@ -71,4 +71,4 @@ class TxBuilder:
         self.client.verify_protocol_v1(requests, node_parity)
 
         requests.append({"address": self.my_address, "value": int(user_change_erg), "assets": user_change_assets, "registers": {}, "creationHeight": current_height})
-        return {"requests": requests, "fee": int(mining_fee), "p_shift": int(buffer_offset), "inputsRaw": inputs_raw, "dataInputsRaw": []}
+        return {"requests": requests, "fee": int(mining_fee), "p_shift": int(buffer_offset), "inputsRaw": inputs_raw, "dataInputsRaw": [], "current_height": int(current_height)}

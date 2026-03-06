@@ -204,7 +204,7 @@ class ErgoSigner:
                 return None, "tx_dict missing 'inputIds' — cannot load input boxes"
             
             # 1. Load context + Inputs
-            state_ctx, current_height = self._fetch_state_context()
+            state_ctx, current_height_node = self._fetch_state_context()
             input_boxes = self._load_input_boxes(input_ids, inputs_raw)
             if not input_boxes:
                 return None, "Could not load any input boxes"
@@ -217,16 +217,20 @@ class ErgoSigner:
             sender_addr = Address.p2pk(child_secret_key.public_image()).to_str(self._network_prefix)
             wallet = Wallet([child_secret_key])
             
-            # 3. Build Transaction via TxBuilder to handle fee and change
+            # 3. Build Transaction using library's TxBuilder to ensure miner fee box is added
+            # Note: tx_dict calculated by our project's TxBuilder already has change outputs,
+            # so the transaction will be balanced once the library adds the fee box.
             out_candidates = self._build_output_candidates(requests_)
-            
             box_selection = BoxSelection(input_boxes, [])
+            # Prioritize height from tx_dict, then node height, then state_ctx
+            current_height = tx_dict.get("current_height") or current_height_node or state_ctx.pre_header.height
+            
             tx_builder = TxBuilder(
-                box_selection,
-                out_candidates,
-                current_height,
-                fee_nano,
-                Address(sender_addr)
+                box_selection=box_selection,
+                output_candidates=out_candidates,
+                current_height=current_height,
+                fee_amount=fee_nano,
+                change_address=Address(sender_addr)
             )
             unsigned_tx = tx_builder.build()
             
@@ -276,17 +280,20 @@ class ErgoSigner:
         if not input_ids:
             raise ValueError("tx_dict missing 'inputIds' — cannot load input boxes")
 
-        state_ctx, current_height = self._fetch_state_context()
+        state_ctx, current_height_node = self._fetch_state_context()
         input_boxes = self._load_input_boxes(input_ids, inputs_raw)
         out_candidates = self._build_output_candidates(tx_dict["requests"])
 
+        # Use library's TxBuilder to add fee box
         box_selection = BoxSelection(input_boxes, [])
+        current_height = tx_dict.get("current_height") or current_height_node or state_ctx.pre_header.height
+        
         tx_builder = TxBuilder(
-            box_selection,
-            out_candidates,
-            current_height,
-            int(tx_dict.get("fee", 0)),
-            Address(sender_address)
+            box_selection=box_selection,
+            output_candidates=out_candidates,
+            current_height=current_height,
+            fee_amount=int(tx_dict.get("fee", 0)),
+            change_address=Address(sender_address)
         )
         unsigned_tx = tx_builder.build()
         
@@ -313,15 +320,22 @@ class ErgoSigner:
             out_candidates = self._build_output_candidates(tx_dict["requests"])
             
             box_selection = BoxSelection(input_boxes, [])
-            # For unsigned JSON, we can use a dummy height if not provided
-            current_height = tx_dict.get("current_height", 1000000) 
+            
+            # Try to get height from tx_dict, fallback to 0 (which will be fixed by fetch_state_ctx in other methods)
+            # but for JSON view we usually have it in tx_builder's requests already.
+            current_height = tx_dict.get("current_height", 0)
+            if current_height == 0 and tx_dict.get("requests"):
+                for r in tx_dict["requests"]:
+                    if "creationHeight" in r and r["creationHeight"] > 0:
+                        current_height = r["creationHeight"]
+                        break
             
             tx_builder = TxBuilder(
-                box_selection,
-                out_candidates,
-                current_height,
-                int(tx_dict.get("fee", 0)),
-                Address(sender_address)
+                box_selection=box_selection,
+                output_candidates=out_candidates,
+                current_height=current_height if current_height > 0 else 1400000, # A more modern default
+                fee_amount=int(tx_dict.get("fee", 0)),
+                change_address=Address(sender_address)
             )
             unsigned_tx = tx_builder.build()
             
