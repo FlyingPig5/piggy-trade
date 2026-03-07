@@ -16,9 +16,109 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import androidx.compose.material3.*
+import androidx.compose.runtime.remember
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material.ripple.rememberRipple
-import androidx.compose.runtime.remember
+
+@Composable
+fun SyncProgressPopup(progress: SyncProgress, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = { if (progress.isFinished) onDismiss() },
+        title = { 
+            Text(
+                if (progress.isFinished) "Sync Complete" 
+                else if (progress.isFirstLaunch) "First launch, syncing trading pairs with dex contracts..."
+                else "Syncing Tokens...", 
+                color = Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = if (progress.isFirstLaunch && !progress.isFinished) 14.sp else 18.sp
+            ) 
+        },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (!progress.isFinished) {
+                    if (progress.total < 0) {
+                        // Fetching boxes phase: spinner + batch information
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                color = ColorAccent,
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.dp
+                            )
+                            Text(
+                                text = progress.batchInfo.ifEmpty { "Connecting to node..." },
+                                color = ColorTextDim,
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(start = 12.dp)
+                            )
+                        }
+                    } else {
+                        // Processing boxes phase: progress bar
+                        LinearProgressIndicator(
+                            progress = if (progress.total > 0) progress.current.toFloat() / progress.total.toFloat() else 0f,
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
+                            color = ColorAccent,
+                            trackColor = ColorInputBg
+                        )
+                        val batchText = if (progress.batchInfo.isNotEmpty()) "\n${progress.batchInfo}" else ""
+                        Text(
+                            "Processed ${progress.current} of ${progress.total} boxes$batchText", 
+                            color = ColorTextDim,
+                            fontSize = 12.sp
+                        )
+                    }
+                    
+                    if (progress.newTokens.isNotEmpty()) {
+                        Text(
+                            "New pairs found: ${progress.newTokens.size}", 
+                            color = ColorAccent, 
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(top = 5.dp)
+                        )
+                    }
+                } else {
+                    Text(
+                        "Sync finished! Processed ${progress.total} boxes.", 
+                        color = ColorText,
+                        fontSize = 14.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        "${progress.newTokens.size} new pairs added:", 
+                        color = ColorAccent, 
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp
+                    )
+                    val list = progress.newTokens.joinToString(", ")
+                    Text(
+                        if (list.isEmpty()) "None" else list, 
+                        color = ColorTextDim, 
+                        fontSize = 11.sp,
+                        lineHeight = 16.sp,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            if (progress.isFinished) {
+                Button(
+                    onClick = onDismiss, 
+                    colors = ButtonDefaults.buttonColors(containerColor = ColorAccent),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Close", color = ColorBg)
+                }
+            }
+        },
+        containerColor = ColorCard,
+        shape = RoundedCornerShape(20.dp)
+    )
+}
 
 /**
  * Exact replication of `apply_android_border` from `ui_views.py`.
@@ -117,16 +217,19 @@ fun TogaIconButton(
     iconSize: Dp = 14.dp, // Match FONT_SIZE_ICON=14
     radius: Dp = 10.dp,
     borderWidth: Dp = 1.dp,
-    borderColor: Color = Color(0xFF535C6E)
+    borderColor: Color = Color(0xFF535C6E),
+    enabled: Boolean = true
 ) {
     val interactionSource = remember { MutableInteractionSource() }
+    val contentAlpha = if (enabled) 1.0f else 0.4f
     Box(
         modifier = modifier
             .androidBorder(radius = radius, borderWidth = borderWidth, borderColor = borderColor, bgColor = bgColor)
             .clickable(
                 interactionSource = interactionSource,
                 indication = rememberRipple(bounded = true, radius = radius),
-                onClick = onClick
+                onClick = onClick,
+                enabled = enabled
             ),
         contentAlignment = Alignment.Center
     ) {
@@ -134,7 +237,7 @@ fun TogaIconButton(
             text = icon,
             fontFamily = MaterialDesignIcons,
             fontSize = iconSize.value.sp,
-            color = iconColor
+            color = iconColor.copy(alpha = contentAlpha)
         )
     }
 }

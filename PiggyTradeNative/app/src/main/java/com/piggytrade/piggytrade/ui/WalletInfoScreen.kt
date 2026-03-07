@@ -95,13 +95,17 @@ fun WalletInfoScreen(
                 modifier = Modifier.padding(start = 10.dp)
             )
             Spacer(modifier = Modifier.weight(1f))
-            IconButton(onClick = { showDeleteConfirm1 = true }) {
-                Text(
-                    text = "\uE872", // Delete icon in Material Icons
-                    color = Color.Red,
-                    fontSize = 24.sp,
-                    fontFamily = MaterialDesignIcons
-                )
+            
+            // Delete Button - show for all wallets except maybe a blank state
+            if (walletName.isNotEmpty() && walletName != "Select Wallet") {
+                IconButton(onClick = { showDeleteConfirm1 = true }) {
+                    Text(
+                        text = "\uE872", // Trash icon
+                        color = Color.Red,
+                        fontSize = 24.sp,
+                        fontFamily = MaterialDesignIcons
+                    )
+                }
             }
         }
 
@@ -298,15 +302,7 @@ fun TokenBalanceItem(tokenId: String, amount: Long, viewModel: SwapViewModel) {
                     fontWeight = FontWeight.Bold
                 )
                 if (tokenId.length > 20) {
-                    val status = viewModel.getVerificationStatus(viewModel.getTokenName(tokenId))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(text = "ID: ${tokenId.take(8)}...", color = ColorTextDim, fontSize = 10.sp)
-                        if (status == 1) {
-                            Text(text = " (Whitelisted)", color = ColorAccent, fontSize = 10.sp)
-                        } else if (status == 0) {
-                            Text(text = " (Official)", color = ColorAccent, fontSize = 10.sp)
-                        }
-                    }
+                    Text(text = "ID: ${tokenId.take(8)}...", color = ColorTextDim, fontSize = 10.sp)
                 }
             }
             Text(

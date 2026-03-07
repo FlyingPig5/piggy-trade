@@ -207,9 +207,12 @@ class TokenRepository(private val context: Context) {
         } catch (e: Exception) { emptySet() }
 
         val newTokensAdded = mutableListOf<String>()
-        val finalErgToToken = existingTokens.filter { !it.value.containsKey("id_in") }.toMutableMap()
-        val finalTokenToToken = existingTokens.filter { it.value.containsKey("id_in") }.toMutableMap()
+        // Only save DISCOVERED tokens (not in official assets) to the files
+        val finalErgToToken = mutableMapOf<String, Map<String, Any>>()
+        val finalTokenToToken = mutableMapOf<String, Map<String, Any>>()
         
+        val officialPids = systemWhitelistPids
+
         // Temporary maps to track best liquidity seen so far during this sync
         val bestErgLiquidity = mutableMapOf<String, Long>()
         val bestTokenLiquidity = mutableMapOf<String, Long>()
@@ -237,14 +240,25 @@ class TokenRepository(private val context: Context) {
                     val isSpecialToken = entryName.equals("USE", ignoreCase = true) || entryName.equals("DexyGold", ignoreCase = true)
                     
                     if (!isSpecialToken) {
-                        data["official"] = isSystemVerified(pid)
-                        data["user_added"] = isUserVerified(pid)
-                        data["whitelisted"] = isPidWhitelisted(pid)
-                        // Only mark as "new" if it wasn't in the pre-existing known set
-                        if (!finalErgToToken.containsKey(entryName) && !assetKnownNames.contains(entryName)) {
-                            newTokensAdded.add(entryName)
+                        data["official"] = officialPids.contains(pid)
+                        data["user_added"] = customWhitelistPids.contains(pid)
+                        data["whitelisted"] = officialPids.contains(pid) || customWhitelistPids.contains(pid)
+
+                        // If the PID is official, we truly skip because we already have it in assets.
+                        // If the NAME is official but PID is different, we allow discovery but with a suffix.
+                        if (!officialPids.contains(pid)) {
+                            val finalDiscoveryName = if (assetKnownNames.contains(entryName)) {
+                                "$entryName (${pid.take(4)})"
+                            } else {
+                                entryName
+                            }
+                            data["name"] = finalDiscoveryName
+                            
+                            if (!assetKnownNames.contains(finalDiscoveryName) && !customWhitelistPids.contains(pid)) {
+                                newTokensAdded.add(finalDiscoveryName)
+                            }
+                            finalErgToToken[finalDiscoveryName] = data
                         }
-                        finalErgToToken[entryName] = data
                     }
                 }
             } else {
@@ -267,14 +281,23 @@ class TokenRepository(private val context: Context) {
                 
                 if (currentLiquidity > bestSoFar) {
                     bestTokenLiquidity[entryName] = currentLiquidity
-                    data["official"] = isSystemVerified(pid)
-                    data["user_added"] = isUserVerified(pid)
-                    data["whitelisted"] = isPidWhitelisted(pid)
-                    // Only mark as "new" if it wasn't in the pre-existing known set
-                    if (!finalTokenToToken.containsKey(entryName) && !assetKnownNames.contains(entryName)) {
-                        newTokensAdded.add(entryName)
+                    data["official"] = officialPids.contains(pid)
+                    data["user_added"] = customWhitelistPids.contains(pid)
+                    data["whitelisted"] = officialPids.contains(pid) || customWhitelistPids.contains(pid)
+
+                    if (!officialPids.contains(pid)) {
+                        val finalDiscoveryName = if (assetKnownNames.contains(entryName)) {
+                            "$entryName (${pid.take(4)})"
+                        } else {
+                            entryName
+                        }
+                        data["name"] = finalDiscoveryName
+
+                        if (!assetKnownNames.contains(finalDiscoveryName) && !customWhitelistPids.contains(pid)) {
+                            newTokensAdded.add(finalDiscoveryName)
+                        }
+                        finalTokenToToken[finalDiscoveryName] = data
                     }
-                    finalTokenToToken[entryName] = data
                 }
             }
             onProgress(index + 1, total, newTokensAdded.toList(), "Analysing box ${index + 1} of $total")
@@ -319,13 +342,15 @@ class TokenRepository(private val context: Context) {
     private fun loadCombinedTokens(): Map<String, Map<String, Any>> {
         val type = object : TypeToken<Map<String, Map<String, Any>>>() {}.type
         
-        // 1. Load hardcoded tokens from assets
-        val assetTokens: Map<String, Map<String, Any>> = try {
+        // 1. Load official tokens (Assets)
+        val officialTokens: Map<String, Map<String, Any>> = try {
             val inputStream = context.assets.open("tokens.json")
             val map: Map<String, Map<String, Any>> = gson.fromJson(InputStreamReader(inputStream), type) ?: emptyMap()
             map.mapValues { (k, v) -> 
                 val mut = v.toMutableMap()
                 if (!mut.containsKey("name")) mut["name"] = k
+                mut["official"] = true
+                mut["whitelisted"] = true
                 mut 
             }
         } catch (e: Exception) {
@@ -333,16 +358,47 @@ class TokenRepository(private val context: Context) {
             emptyMap()
         }
 
-        // 2. Load synced tokens from files
-        val ergToToken: Map<String, Map<String, Any>> = try {
+        // 2. Load synced tokens (Local Files)
+        val syncedErgToToken: Map<String, Map<String, Any>> = try {
             if (ergToTokenFile.exists()) gson.fromJson(ergToTokenFile.readText(), type) else emptyMap()
         } catch (e: Exception) { emptyMap() }
 
-        val tokenToToken: Map<String, Map<String, Any>> = try {
+        val syncedTokenToToken: Map<String, Map<String, Any>> = try {
             if (tokenToTokenFile.exists()) gson.fromJson(tokenToTokenFile.readText(), type) else emptyMap()
         } catch (e: Exception) { emptyMap() }
 
-        return ergToToken + tokenToToken + assetTokens
+        // Start with official tokens as priority
+        val combined = mutableMapOf<String, Map<String, Any>>()
+        combined.putAll(officialTokens)
+        
+        // Add synced tokens only if they are not already official
+        val pidMap = mutableMapOf<String, String>()
+        officialTokens.forEach { (key, data) ->
+            val pid = data["pid"] as? String ?: (data["lp"] as? String ?: "")
+            if (pid.isNotEmpty()) pidMap[pid] = key
+        }
+
+        fun addSynced(syncedMap: Map<String, Map<String, Any>>) {
+            syncedMap.forEach { (key, data) ->
+                val pid = data["pid"] as? String ?: (data["lp"] as? String ?: "")
+                if (pid.isNotEmpty()) {
+                    // Priority Check: Sync only if both Name and PID are NOT in the official list
+                    if (!pidMap.containsKey(pid) && !officialTokens.containsKey(key)) {
+                        val mut = data.toMutableMap()
+                        mut["official"] = false
+                        mut["user_added"] = customWhitelistPids.contains(pid)
+                        mut["whitelisted"] = isPidWhitelisted(pid)
+                        combined[key] = mut
+                        pidMap[pid] = key
+                    }
+                }
+            }
+        }
+
+        addSynced(syncedErgToToken)
+        addSynced(syncedTokenToToken)
+
+        return combined
     }
 
     private var _cachedTokenInfo: MutableMap<String, Map<String, Any>>? = null
@@ -529,23 +585,58 @@ class TokenRepository(private val context: Context) {
     }
 
     fun updateTokenData(key: String, data: Map<String, Any>) {
+        val officialPids = systemWhitelistPids
         val all = tokens.toMutableMap()
         all[key] = data
-        
-        val ergs = all.filter { !it.value.containsKey("id_in") } // Changed from !it.key.contains("-")
-        val t2ts = all.filter { it.value.containsKey("id_in") } // Changed from it.key.contains("-")
-        
-        ergToTokenFile.writeText(gson.toJson(ergs))
-        tokenToTokenFile.writeText(gson.toJson(t2ts))
-        
-        // Clear caches so the updated data is reused immediately
-        refreshTokens()
         
         // Update custom whitelist if pid is in data
         (data["pid"] as? String)?.let { pid ->
             val isUser = data["user_added"] as? Boolean ?: false
             if (isUser) customWhitelistPids.add(pid) else customWhitelistPids.remove(pid)
             saveCustomWhitelist(customWhitelistPids)
+        }
+        
+        saveToFiles(all, officialPids)
+    }
+
+    fun renameTokenData(oldKey: String, newKey: String, data: Map<String, Any>) {
+        val officialPids = systemWhitelistPids
+        val all = tokens.toMutableMap()
+        all.remove(oldKey)
+        all[newKey] = data
+        
+        // Update custom whitelist if pid is in data
+        (data["pid"] as? String)?.let { pid ->
+            val isUser = data["user_added"] as? Boolean ?: false
+            if (isUser) customWhitelistPids.add(pid) else customWhitelistPids.remove(pid)
+            saveCustomWhitelist(customWhitelistPids)
+        }
+        
+        saveToFiles(all, officialPids)
+    }
+
+    private fun saveToFiles(all: Map<String, Map<String, Any>>, officialPids: Set<String>) {
+        val ergs = all.filter { !it.value.containsKey("id_in") && !officialPids.contains(it.value["pid"] as? String) }
+        val t2ts = all.filter { it.value.containsKey("id_in") && !officialPids.contains(it.value["pid"] as? String) }
+        
+        try {
+            ergToTokenFile.writeText(gson.toJson(ergs))
+            tokenToTokenFile.writeText(gson.toJson(t2ts))
+            refreshTokens()
+        } catch (e: Exception) {}
+    }
+
+    fun resetTokenData() {
+        try {
+            if (ergToTokenFile.exists()) ergToTokenFile.delete()
+            if (tokenToTokenFile.exists()) tokenToTokenFile.delete()
+            if (whitelistFile.exists()) whitelistFile.delete()
+            if (cacheFile.exists()) cacheFile.delete()
+            
+            customWhitelistPids.clear()
+            refreshTokens()
+        } catch (e: Exception) {
+            Log.e("TokenRepo", "Error resetting token data: ${e.message}")
         }
     }
 }

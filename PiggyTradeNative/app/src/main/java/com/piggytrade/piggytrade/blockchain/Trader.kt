@@ -149,8 +149,7 @@ class Trader(
         poolType: String = "erg",
         senderAddress: String,
         fee: Double = 0.002,
-        useMempool: Boolean = true,
-        useLpMempool: Boolean = true
+        includeUnconfirmed: Boolean = true
     ): Map<String, Any> {
         if (builder == null) throw IllegalStateException("TxBuilder not provided")
         
@@ -159,19 +158,19 @@ class Trader(
         val tokenId = cfg["id"] as? String ?: ""
         val tokenPid = cfg["pid"] as? String ?: ""
         val lpId = cfg["lp"] as? String ?: ""
-
+        
         // Fetch pool box
-        val poolBox = client.getPoolBox(tokenPid, useLpMempool) ?: throw IllegalArgumentException("Pool box for ${tokenName} not found")
+        val poolBox = client.getPoolBox(tokenPid, includeUnconfirmed) ?: throw IllegalArgumentException("Pool box for ${tokenName} not found")
         
         var lpSwapBox: Map<String, Any>? = null
         if (tokenName.equals("use", true) || tokenName.equals("dexygold", true)) {
             val cfgLp = if (tokenName.equals("use", true)) com.piggytrade.piggytrade.protocol.NetworkConfig.USE_CONFIG else com.piggytrade.piggytrade.protocol.NetworkConfig.DEXYGOLD_CONFIG
             val lpNftId = cfgLp["lp_nft"] as String
-            lpSwapBox = client.getPoolBox(lpNftId, useLpMempool) ?: throw IllegalArgumentException("${tokenName.uppercase()} LP Swap Box not found!")
+            lpSwapBox = client.getPoolBox(lpNftId, includeUnconfirmed) ?: throw IllegalArgumentException("${tokenName.uppercase()} LP Swap Box not found!")
         }
         
         // Fetch user assets
-        val (myAssets, myNanoerg, userBoxes) = client.getMyAssets(senderAddress, useMempool)
+        val (myAssets, myNanoerg, userBoxes) = client.getMyAssets(senderAddress, includeUnconfirmed)
         if (userBoxes.isEmpty()) throw IllegalArgumentException("No boxes found for address")
 
         val poolNanoerg = (poolBox["value"] as? Number)?.toLong() ?: 0L

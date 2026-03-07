@@ -24,7 +24,9 @@ fun <T> SelectorScreen(
     getName: (T) -> String,
     getId: (T) -> String,
     getBalance: ((T) -> String?)? = null,
-    getVerificationStatus: ((T) -> Int)? = null
+    getVerificationStatus: ((T) -> Int)? = null,
+    showFullId: Boolean = false,
+    showSearch: Boolean = true
 ) {
     var searchQuery by remember { mutableStateOf("") }
     val filteredItems = items.filter { 
@@ -51,26 +53,40 @@ fun <T> SelectorScreen(
                 radius = 10.dp,
                 bgColor = ColorBlue
             )
-            TextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                placeholder = { Text("Search...", color = ColorInputHint, fontSize = 14.sp) },
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 10.dp)
-                    .height(52.dp),
-                textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = ColorInputBg,
-                    unfocusedContainerColor = ColorInputBg,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White
-                ),
-                shape = RoundedCornerShape(10.dp),
-                singleLine = true
-            )
+            if (showSearch) {
+                TextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = { Text("Search...", color = ColorInputHint, fontSize = 14.sp) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 10.dp)
+                        .height(52.dp),
+                    textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = ColorInputBg,
+                        unfocusedContainerColor = ColorInputBg,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Search,
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Text
+                    )
+                )
+            } else {
+                Text(
+                    text = title,
+                    color = Color.White,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(start = 15.dp)
+                )
+            }
         }
 
         TogaColumn(
@@ -91,7 +107,7 @@ fun <T> SelectorScreen(
                             .clickable { onSelect(item) },
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TokenImage(tokenId = getId(item), modifier = Modifier.size(24.dp).padding(start = 15.dp))
+                        TokenImage(tokenId = getId(item), modifier = Modifier.size(40.dp).padding(start = 12.dp))
                         
                         val status = getVerificationStatus?.invoke(item) ?: 0
                         val baseName = getName(item)
@@ -107,30 +123,48 @@ fun <T> SelectorScreen(
                                 Text(
                                     text = baseName,
                                     color = nameColor,
-                                    fontSize = 14.sp,
+                                    fontSize = 18.sp,
                                     fontWeight = FontWeight.Bold
                                 )
                                 if (labelText.isNotEmpty()) {
                                     Text(
                                         text = labelText,
                                         color = ColorOrange,
-                                        fontSize = 11.sp,
+                                        fontSize = 12.sp,
                                         fontWeight = FontWeight.Normal
                                     )
                                 }
                             }
-                            Text(
-                                text = "ID: ${getId(item).take(8)}...",
-                                color = ColorTextDim,
-                                fontSize = 10.sp
-                            )
+                            if (getId(item).isNotEmpty()) {
+                                if (showFullId) {
+                                    Text(
+                                        text = getId(item),
+                                        color = ColorTextDim,
+                                        fontSize = 11.sp,
+                                        maxLines = 1
+                                    )
+                                } else {
+                                    val isAddress = getId(item).length > 30
+                                    val label = if (isAddress) "Addr: " else "ID: "
+                                    val displayId = if (isAddress) {
+                                        getId(item).take(12) + "..." + getId(item).takeLast(6)
+                                    } else {
+                                        getId(item).take(10)
+                                    }
+                                    Text(
+                                        text = "$label$displayId",
+                                        color = ColorTextDim,
+                                        fontSize = 12.sp
+                                    )
+                                }
+                            }
                         }
                         if (getBalance != null) {
                             getBalance(item)?.let { balance ->
                                 Text(
                                     text = balance,
                                     color = Color.White,
-                                    fontSize = 14.sp,
+                                    fontSize = 18.sp,
                                     fontWeight = FontWeight.Bold,
                                     modifier = Modifier.padding(end = 15.dp)
                                 )

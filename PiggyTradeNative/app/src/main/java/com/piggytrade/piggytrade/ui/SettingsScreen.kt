@@ -9,16 +9,25 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.piggytrade.piggytrade.R
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.core.tween
 
 @Composable
 fun SettingsScreen(
@@ -35,11 +44,15 @@ fun SettingsScreen(
         SyncProgressPopup(uiState.syncProgress!!, onDismiss = { viewModel.dismissSyncPopup() })
     }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(ColorBg)
     ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+        ) {
         // Header
         TogaRow(
             modifier = Modifier
@@ -74,21 +87,40 @@ fun SettingsScreen(
                 .padding(bottom = 10.dp)
                 .verticalScroll(scrollState)
                 .androidBorder(radius = 30.dp, borderWidth = 0.dp, bgColor = ColorCard)
-                .padding(top = 40.dp, bottom = 20.dp, start = 20.dp, end = 20.dp)
+                .padding(top = 5.dp, bottom = 20.dp, start = 20.dp, end = 20.dp)
         ) {
-            // Logo & Credits
             TogaColumn(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 15.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Image(
-                    painter = painterResource(id = R.drawable.logo),
-                    contentDescription = "Large Logo",
-                    modifier = Modifier
-                        .width(120.dp)
-                        .height(98.dp)
-                        .padding(bottom = 10.dp)
-                )
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier.padding(bottom = 10.dp)
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.logo),
+                        contentDescription = "Large Logo",
+                        modifier = Modifier
+                            .size(110.dp)
+                            .clip(RoundedCornerShape(55.dp))
+                    )
+                    
+                    // The "Feather" Overlay: Fades from transparent in the center 
+                    // to the card background color at the edges.
+                    Box(
+                        modifier = Modifier
+                            .size(110.dp)
+                            .background(
+                                brush = Brush.radialGradient(
+                                    colorStops = arrayOf(
+                                        0.5f to Color.Transparent,
+                                        0.65f to Color.Transparent,
+                                        0.95f to ColorCard
+                                    )
+                                )
+                            )
+                    )
+                }
                 Text(
                     text = "Ergo trading shouldn't be a desk job.\nSwap on the go!",
                     color = ColorTextDim,
@@ -130,56 +162,64 @@ fun SettingsScreen(
             TogaRow(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 10.dp, end = 10.dp),
+                    .padding(horizontal = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Node Selection Dropdown
-                var expanded by remember { mutableStateOf(false) }
-                Box(
+                TogaRow(
                     modifier = Modifier
                         .weight(1f)
-                        .height(40.dp)
-                        .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = ColorSelectionBg)
-                        .clickable { expanded = true },
-                    contentAlignment = Alignment.CenterStart
+                        .height(60.dp)
+                        .androidBorder(radius = 12.dp, borderWidth = 0.dp, bgColor = ColorInputBg)
+                        .clickable { viewModel.setActiveSelector("node") },
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = uiState.nodes.getOrNull(uiState.selectedNodeIndex) ?: "Select Node",
-                        color = Color.Black,
-                        fontSize = 10.sp,
-                        modifier = Modifier.padding(start = 10.dp)
+                    Icon(
+                        painter = painterResource(id = android.R.drawable.ic_menu_compass),
+                        contentDescription = null,
+                        tint = ColorAccent,
+                        modifier = Modifier.padding(start = 12.dp).size(24.dp)
                     )
-                    DropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false },
-                        modifier = Modifier.background(ColorSelectionBg)
+                    Column(
+                        modifier = Modifier.weight(1f).padding(horizontal = 12.dp)
                     ) {
-                        uiState.nodes.forEachIndexed { index, node ->
-                            DropdownMenuItem(
-                                text = { Text(node, color = Color.Black) },
-                                onClick = {
-                                    viewModel.setSelectedNodeIndex(index)
-                                    expanded = false
-                                }
-                            )
-                        }
+                        val nodeName = uiState.nodes.getOrNull(uiState.selectedNodeIndex) ?: "Select Node"
+                        Text(
+                            text = nodeName.substringBefore(":"),
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1
+                        )
+                        Text(
+                            text = nodeName.substringAfter(": "),
+                            color = ColorTextDim,
+                            fontSize = 10.sp
+                        )
                     }
+                    Icon(
+                        painter = painterResource(id = android.R.drawable.arrow_down_float),
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.padding(end = 12.dp)
+                    )
                 }
 
+                Spacer(modifier = Modifier.width(8.dp))
                 TogaIconButton(
                     icon = "\uE145", // ICON_PLUS
                     onClick = onNavigateToAddNode,
-                    modifier = Modifier.padding(start = 5.dp).size(32.dp),
+                    modifier = Modifier.size(40.dp),
                     radius = 8.dp,
-                    borderColor = Color(0xFF535C6E),
+                    borderColor = ColorBorder,
                     bgColor = ColorInputBg
                 )
+                Spacer(modifier = Modifier.width(6.dp))
                 TogaIconButton(
                     icon = "\uE872", // ICON_TRASH
-                    onClick = { /* delete node */ },
-                    modifier = Modifier.padding(start = 5.dp).size(32.dp),
+                    onClick = { viewModel.deleteNode() },
+                    modifier = Modifier.size(40.dp),
                     radius = 8.dp,
-                    bgColor = Color(0xFF9E1F1F) // BTN_DEL_N_COLOR
+                    bgColor = Color(0xFF9E1F1F)
                 )
             }
 
@@ -204,22 +244,49 @@ fun SettingsScreen(
                 )
             }
 
-            // Service Fees Section
+            TogaRow(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 10.dp, start = 10.dp, end = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Include unconfirmed",
+                    color = ColorText,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = uiState.includeUnconfirmed,
+                    onCheckedChange = { viewModel.setIncludeUnconfirmed(it) },
+                    modifier = Modifier.scale(0.8f)
+                )
+            }
+
+            // Favorites Setting
             Text(
-                text = "SERVICE FEES",
+                text = "FAVORITES",
                 color = ColorText,
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(top = 20.dp, bottom = 5.dp, start = 10.dp)
             )
-            val feeDesc = "• Token to Token trades: FREE!\n• Under 10 ERG: 0.0001 ERG\n• Over 10 ERG: 0.05%\n\nYeah, it's CHEAP!!"
-            Text(
-                text = feeDesc,
-                color = ColorTextDim,
-                fontSize = 8.sp,
-                modifier = Modifier.padding(start = 15.dp),
-                lineHeight = 12.sp
-            )
+            TogaRow(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(text = "Count:", color = ColorText, fontSize = 12.sp)
+                Slider(
+                    value = uiState.numFavorites.toFloat(),
+                    onValueChange = { viewModel.setNumFavorites(it.toInt()) },
+                    valueRange = 4f..20f,
+                    steps = 15,
+                    modifier = Modifier.weight(1f).padding(horizontal = 10.dp)
+                )
+                Text(text = "${uiState.numFavorites}", color = ColorText, fontSize = 12.sp, modifier = Modifier.width(30.dp))
+            }
+
 
             // Token Management Section
             Text(
@@ -229,46 +296,6 @@ fun SettingsScreen(
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(top = 20.dp, bottom = 10.dp, start = 10.dp)
             )
-
-            if (uiState.debugMode) {
-                TogaRow(
-                    modifier = Modifier.fillMaxWidth().padding(start = 10.dp, end = 5.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = ColorBlue)
-                            .clickable { /* import */ }
-                            .padding(vertical = 10.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("Import", color = Color.White, fontSize = 12.sp)
-                    }
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(start = 5.dp)
-                            .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = Color(0xFF535C6E))
-                            .clickable { /* export */ }
-                            .padding(vertical = 10.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("Export", color = Color.White, fontSize = 12.sp)
-                    }
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 10.dp, start = 10.dp, end = 5.dp)
-                        .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = Color(0xFFF2A332))
-                        .clickable { /* import all */ }
-                        .padding(vertical = 12.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("Import All Trading Pairs", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                }
-            }
 
             Box(
                 modifier = Modifier
@@ -282,128 +309,77 @@ fun SettingsScreen(
                 Text("Check for new trading pairs", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 10.dp, start = 10.dp, end = 5.dp)
-                    .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = Color(0xFF6200EE))
-                    .clickable { onNavigateToManagePairs() }
-                    .padding(vertical = 12.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("Manage Trading Pairs", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            }
+            if (uiState.debugMode) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp, start = 10.dp, end = 5.dp)
+                        .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = Color(0xFF24336B))
+                        .clickable { onNavigateToManagePairs() }
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("Manage Trading Pairs", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 10.dp, start = 10.dp, end = 5.dp)
-                    .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = Color(0xFF6200EE))
-                    .clickable { viewModel.exportTokens(context) }
-                    .padding(vertical = 12.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("Export Sync'd Tokens", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 10.dp, start = 10.dp, end = 5.dp)
+                        .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = Color(0xFF24336B))
+                        .clickable { viewModel.exportTokens(context) }
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("Export token list", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                }
         }
     }
 }
 
-@Composable
-fun SyncProgressPopup(progress: SyncProgress, onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = { if (progress.isFinished) onDismiss() },
-        title = { 
-            Text(
-                if (progress.isFinished) "Sync Complete" 
-                else if (progress.isFirstLaunch) "First launch, syncing trading pairs with dex contracts..."
-                else "Syncing Tokens...", 
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                fontSize = if (progress.isFirstLaunch && !progress.isFinished) 14.sp else 18.sp
-            ) 
-        },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                if (!progress.isFinished) {
-                    if (progress.total < 0) {
-                        // Fetching boxes phase: spinner + batch information
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)
-                        ) {
-                            CircularProgressIndicator(
-                                color = ColorAccent,
-                                modifier = Modifier.size(24.dp),
-                                strokeWidth = 2.dp
-                            )
-                            Text(
-                                text = progress.batchInfo.ifEmpty { "Connecting to node..." },
-                                color = ColorTextDim,
-                                fontSize = 12.sp,
-                                modifier = Modifier.padding(start = 12.dp)
-                            )
-                        }
-                    } else {
-                        // Processing boxes phase: progress bar
-                        LinearProgressIndicator(
-                            progress = if (progress.total > 0) progress.current.toFloat() / progress.total.toFloat() else 0f,
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
-                            color = ColorAccent,
-                            trackColor = ColorInputBg
-                        )
-                        val batchText = if (progress.batchInfo.isNotEmpty()) "\n${progress.batchInfo}" else ""
-                        Text(
-                            "Processed ${progress.current} of ${progress.total} boxes$batchText", 
-                            color = ColorTextDim,
-                            fontSize = 12.sp
-                        )
-                    }
-                    
-                    if (progress.newTokens.isNotEmpty()) {
-                        Text(
-                            "New pairs found: ${progress.newTokens.size}", 
-                            color = ColorAccent, 
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(top = 5.dp)
-                        )
-                    }
-                } else {
-                    Text(
-                        "Sync finished! Processed ${progress.total} boxes.", 
-                        color = ColorText,
-                        fontSize = 14.sp
-                    )
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Text(
-                        "${progress.newTokens.size} new pairs added:", 
-                        color = ColorAccent, 
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp
-                    )
-                    val list = progress.newTokens.joinToString(", ")
-                    Text(
-                        if (list.isEmpty()) "None" else list, 
-                        color = ColorTextDim, 
-                        fontSize = 11.sp,
-                        lineHeight = 16.sp,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            if (progress.isFinished) {
-                Button(
-                    onClick = onDismiss, 
-                    colors = ButtonDefaults.buttonColors(containerColor = ColorAccent),
-                    shape = RoundedCornerShape(10.dp)
+    // Animated Selector Overlay for Node Selection
+    Box(modifier = Modifier.fillMaxSize()) {
+        AnimatedVisibility(
+            visible = uiState.activeSelector == "node",
+        enter = slideInVertically(initialOffsetY = { it }, animationSpec = tween(400)),
+        exit = slideOutVertically(targetOffsetY = { it }, animationSpec = tween(400)),
+        modifier = Modifier.align(Alignment.BottomCenter)
+    ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable { viewModel.setActiveSelector(null) }
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(0.75f)
+                        .align(Alignment.BottomCenter)
+                        .background(ColorBg, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                        .clickable(
+                            indication = null,
+                            interactionSource = remember { MutableInteractionSource() }
+                        ) { /* Consume click */ }
                 ) {
-                    Text("Close", color = ColorBg)
+                    SelectorScreen(
+                        title = "Select Node",
+                        items = uiState.nodes,
+                        onSelect = { node ->
+                            viewModel.finalizeSelection(node)
+                            viewModel.setActiveSelector(null)
+                        },
+                        onBack = { viewModel.setActiveSelector(null) },
+                        getName = { it.substringBefore(":") },
+                        getId = { it.substringAfter(": ") },
+                        getBalance = { null },
+                        showFullId = true,
+                        showSearch = false
+                    )
                 }
             }
-        },
-        containerColor = ColorCard,
-        shape = RoundedCornerShape(20.dp)
-    )
+        }
+    }
 }
+}
+

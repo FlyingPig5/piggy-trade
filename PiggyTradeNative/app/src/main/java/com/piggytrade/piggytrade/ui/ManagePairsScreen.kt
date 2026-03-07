@@ -43,9 +43,11 @@ fun ManagePairsScreen(
     
     // New Toggle State: 0 = All, 1 = ERG to Token, 2 = Token to Token
     var filterType by remember { mutableStateOf(0) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     LaunchedEffect(Unit) {
-        viewModel.loadPoolMappings()
+        viewModel.loadPoolMappings(fetchLiquidity = true)
     }
 
     Box(modifier = Modifier.fillMaxSize().background(ColorBg)) {
@@ -71,6 +73,37 @@ fun ManagePairsScreen(
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(start = 10.dp).weight(1f)
                 )
+
+                // Reset Button
+                var showResetDialog by remember { mutableStateOf(false) }
+                TogaIconButton(
+                    icon = "\uE872", // DELETE/TRASH
+                    onClick = { showResetDialog = true },
+                    modifier = Modifier.size(36.dp).padding(end = 8.dp),
+                    radius = 10.dp,
+                    bgColor = ColorDanger
+                )
+
+                if (showResetDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showResetDialog = false },
+                        title = { Text("Reset Token Data?") },
+                        text = { Text("This will erase all custom whitelisted pairs and downloaded token metadata. The app will revert to the default official token list.") },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                viewModel.resetTokenData()
+                                showResetDialog = false
+                            }) {
+                                Text("Reset All", color = ColorDanger)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showResetDialog = false }) {
+                                Text("Cancel")
+                            }
+                        }
+                    )
+                }
                 
                 // Filter Tabs
                 Row(
@@ -226,20 +259,37 @@ fun ManagePairsScreen(
                                 },
                                 onDrag = { offset -> dragOffset += offset },
                                 onDragEnd = {
-                                    val finalPos = dragOffset
+                                    val itemHalfWidthPx = (160.dp.value * density.density) / 2
+                                    val itemHalfHeightPx = (60.dp.value * density.density) / 2
+                                    
+                                    val dropPoint = Offset(
+                                        x = dragOffset.x + itemHalfWidthPx,
+                                        y = dragOffset.y + itemHalfHeightPx
+                                    )
+                                    
                                     draggingItem?.let { target ->
-                                        if (whitelistColumnBounds?.contains(finalPos) == true) {
-                                            val isDuplicate = uiState.whitelistedPools.any { it.name.equals(target.name, ignoreCase = true) }
-                                            if (isDuplicate) {
-                                                renameValue = target.name
-                                                showRenameDialog = target
-                                            } else {
-                                                viewModel.togglePoolWhitelist(target, true)
-                                            }
-                                        }
-                                    }
-                                    draggingItem = null
-                                }
+                                         // Lenient check: if center is in the left half of the screen
+                                         val inBounds = whitelistColumnBounds?.let { bounds ->
+                                             dropPoint.x < bounds.right + 20.dp.value * density.density
+                                         } ?: false
+
+                                         if (inBounds) {
+                                             val existingNames = uiState.whitelistedPools.map { it.name }.toSet()
+                                             // If name already exists or it's a "Duplicate" discovery (has suffix)
+                                             if (existingNames.contains(target.name) || target.name.contains(" (")) {
+                                                 showRenameDialog = target
+                                                 // Suggest name without the PID suffix or with a -2 suffix
+                                                 val base = target.name.substringBefore(" (")
+                                                 renameValue = if (existingNames.contains(base)) "$base-2" else base
+                                             } else {
+                                                 viewModel.togglePoolWhitelist(target, true)
+                                             }
+                                         } else {
+                                             android.widget.Toast.makeText(context, "Drop on left side to whitelist", android.widget.Toast.LENGTH_SHORT).show()
+                                         }
+                                     }
+                                     draggingItem = null
+                                 }
                             )
                         }
                     }
@@ -399,9 +449,9 @@ fun MappingItemWithActions(
                 fontSize = 8.sp
             )
             Text(
-                text = mapping.liquidity,
+                text = "Liquidity: ${mapping.liquidity}",
                 color = if (mapping.status == 0) ColorAccent else ColorOrange,
-                fontSize = 9.sp,
+                fontSize = 11.sp, // Slightly larger for clarity
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(top = 2.dp)
             )

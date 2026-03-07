@@ -55,13 +55,17 @@ data class SwapState(
     val unsignedTxJson: String = "",
     val reviewParams: ReviewParams? = null,
     val txSuccessData: TxSuccessData? = null,
-    val useMempool: Boolean = true,
-    val useLpMempool: Boolean = true,
+    val includeUnconfirmed: Boolean = true,
     val trades: List<TradeHistoryItem> = emptyList(),
     val syncProgress: SyncProgress? = null,
     val whitelistedPools: List<PoolMapping> = emptyList(),
     val discoveredPools: List<PoolMapping> = emptyList(),
-    val isLoadingMapping: Boolean = false
+    val isLoadingMapping: Boolean = false,
+    val isWalletExpanded: Boolean = false,
+    val numFavorites: Int = 8,
+    val activeSelector: String? = null, // "from", "to", "fav", "wallet"
+    val nodeUrl: String = "",
+    val isToAssetFavorite: Boolean = false
 )
 
 data class PoolMapping(
@@ -75,7 +79,8 @@ data class PoolMapping(
      * 2: Unverified
      */
     val status: Int,
-    val data: Map<String, Any>
+    val data: Map<String, Any>,
+    val key: String
 )
 
 data class SyncProgress(
@@ -140,10 +145,17 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             displayWallets.add("ErgoPay")
         }
 
-        // Favorites: Exactly 8. 1st is ERG.
-        val loadedFavs = preferenceManager.loadFavorites(com.piggytrade.piggytrade.protocol.NetworkConfig.DEFAULT_FAVORITES)
-        val favorites = (listOf("ERG") + loadedFavs.filter { it != "ERG" }).take(8).let { list ->
-            if (list.size < 8) list + List(8 - list.size) { "?" } else list
+        // Favorites: Dynamic based on settings. 1st is ERG.
+        val numFavs = (preferenceManager.loadSettings()[PreferenceManager.KEY_NUM_FAVORITES] as? Number)?.toInt() ?: 8
+        val savedFavs = preferenceManager.loadFavorites(com.piggytrade.piggytrade.protocol.NetworkConfig.DEFAULT_FAVORITES)
+        
+        // Always maintain a padding of up to 20 favorites to avoid data loss
+        val maxPossible = 20
+        val baseFavs = (listOf("ERG") + savedFavs.filter { it != "ERG" && it != "?" }).take(maxPossible)
+        val favorites = if (baseFavs.size < maxPossible) {
+            baseFavs + List(maxPossible - baseFavs.size) { "?" }
+        } else {
+            baseFavs
         }
 
         val initialNodeUrl = preferenceManager.selectedNode
@@ -164,13 +176,13 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 nodes = nodesList,
                 selectedNodeIndex = initialNodeIndex,
                 debugMode = (preferenceManager.loadSettings()["debug_mode"] as? Boolean) ?: false,
-                tokens = listOf("ERG", "SigUSD", "USE", "DexyGold", "rsADA"), // Fast initial list
+                tokens = emptyList(), // Start empty, will be filled by loadPoolMappings
                 wallets = displayWallets,
                 selectedWallet = initialWalletDisplay,
                 selectedAddress = initialAddress,
                 favorites = favorites,
-                useMempool = (preferenceManager.loadSettings()["use_mempool"] as? Boolean) ?: true,
-                useLpMempool = (preferenceManager.loadSettings()["use_lp_mempool"] as? Boolean) ?: true,
+                includeUnconfirmed = (preferenceManager.loadSettings()["include_unconfirmed"] as? Boolean) ?: true,
+                numFavorites = numFavs,
                 trades = preferenceManager.loadTrades().map {
                     TradeHistoryItem(
                         timestamp = it["timestamp"] as? String ?: "",
@@ -187,56 +199,67 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     val uiState: StateFlow<SwapState> by lazy { _uiState.asStateFlow() }
 
     init {
-        // Pre-warm the Token Index in background to avoid "first quote" lag
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
-            val allTokens = tokenRepository.getAllAssets()
-            // Force TradeMapper indexing
-            tokenRepository.tradeMapper
+        Log.d(TAG, "SwapViewModel instance created.")
+        
+        // 1. Initial immediate list setup (no network)
+        loadPoolMappings(fetchLiquidity = false) 
+        
+        // 2. Offload heavy background tasks
+        viewModelScope.launch {
+            // Sequential initialization
+            withContext(kotlinx.coroutines.Dispatchers.Default) {
+                tokenRepository.tradeMapper
+            }
             
-            withContext(kotlinx.coroutines.Dispatchers.Main) {
-                _uiState.value = _uiState.value.copy(tokens = allTokens)
+            // 1. Initialize Node Client (wait for it)
+            initializeNodeClient()
+            
+            // 2. Fetch Wallet Balances (now client is ready)
+            fetchWalletBalances()
+            
+            // 3. First launch sync if needed
+            if (!tokenRepository.hasTokenFiles()) {
+                syncTokenList(isFirstLaunch = true)
             }
         }
     }
-
     private var nodeClient: NodeClient? = null
     private var trader: Trader? = null
 
-    init {
-        Log.d(TAG, "SwapViewModel instance created.")
-        // Offload heavy index building/file reading to background
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
-             updateNodeClient()
-             fetchWalletBalances()
-        }
-    }
-
-    init {
-        if (!tokenRepository.hasTokenFiles()) {
-            syncTokenList(isFirstLaunch = true)
+    private suspend fun initializeNodeClient() {
+        withContext(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val currentNodes = _uiState.value.nodes
+                val index = _uiState.value.selectedNodeIndex
+                if (index in currentNodes.indices) {
+                    var nUrl = currentNodes[index]
+                    if (nUrl.contains("(")) {
+                        nUrl = nUrl.substringAfter("(").substringBefore(")")
+                    } else if (nUrl.contains(": ")) {
+                        nUrl = nUrl.substringAfter(": ")
+                    }
+                    
+                    val finalUrl = if (nUrl.startsWith("http")) nUrl else "https://ergo-node.eutxo.de"
+                    Log.d(TAG, "Using node URL: $finalUrl")
+                    val client = NodeClient(finalUrl)
+                    nodeClient = client
+                    trader = Trader(client, null, tokenRepository.tokens)
+                    
+                    withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        _uiState.value = _uiState.value.copy(nodeUrl = finalUrl)
+                        loadPoolMappings(fetchLiquidity = false) 
+                    }
+                }
+                Unit
+            } catch (e: Exception) {
+                Log.e(TAG, "Error initializing node client", e)
+            }
         }
     }
 
     private fun updateNodeClient() {
-        try {
-            val currentNodes = _uiState.value.nodes
-            val index = _uiState.value.selectedNodeIndex
-            if (index in currentNodes.indices) {
-                var nodeUrl = currentNodes[index]
-                if (nodeUrl.contains("(")) {
-                    nodeUrl = nodeUrl.substringAfter("(").substringBefore(")")
-                } else if (nodeUrl.contains(": ")) {
-                    nodeUrl = nodeUrl.substringAfter(": ")
-                }
-                
-                val finalUrl = if (nodeUrl.startsWith("http")) nodeUrl else "https://ergo-node.eutxo.de"
-                Log.d(TAG, "Using node URL: $finalUrl")
-                val client = NodeClient(finalUrl)
-                nodeClient = client
-                trader = Trader(client, null, tokenRepository.tokens)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to update node client", e)
+        viewModelScope.launch {
+            initializeNodeClient()
         }
     }
 
@@ -286,9 +309,12 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setToAsset(asset: String) {
-        _uiState.value = _uiState.value.copy(
+        val current = _uiState.value
+        val isFav = current.favorites.any { it.equals(asset, ignoreCase = true) }
+        _uiState.value = current.copy(
             toAsset = asset,
-            toPulseTrigger = System.currentTimeMillis()
+            toPulseTrigger = System.currentTimeMillis(),
+            isToAssetFavorite = isFav
         )
         updateBalances()
         fetchQuote()
@@ -308,10 +334,13 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         val current = _uiState.value
         if (current.fromAsset.isNotEmpty() && current.toAsset.isNotEmpty()) {
             val cleanQuote = current.toQuote.replace(",", "").split(" ")[0]
+            val newToAsset = current.fromAsset
+            val isFav = current.favorites.any { it.equals(newToAsset, ignoreCase = true) }
             _uiState.value = current.copy(
                 fromAsset = current.toAsset,
-                toAsset = current.fromAsset,
-                fromAmount = if (cleanQuote == "--") "" else cleanQuote
+                toAsset = newToAsset,
+                fromAmount = if (cleanQuote == "--") "" else cleanQuote,
+                isToAssetFavorite = isFav
             )
             updateBalances()
             fetchQuote()
@@ -334,26 +363,46 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         preferenceManager.saveSettings(settings)
     }
 
-    fun setUseMempool(use: Boolean) {
-        _uiState.value = _uiState.value.copy(useMempool = use)
+    fun setIncludeUnconfirmed(value: Boolean) {
+        _uiState.value = _uiState.value.copy(includeUnconfirmed = value)
         val settings = preferenceManager.loadSettings().toMutableMap()
-        settings["use_mempool"] = use
+        settings["include_unconfirmed"] = value
         preferenceManager.saveSettings(settings)
-        fetchWalletBalances()
-    }
-
-    fun setUseLpMempool(use: Boolean) {
-        _uiState.value = _uiState.value.copy(useLpMempool = use)
-        val settings = preferenceManager.loadSettings().toMutableMap()
-        settings["use_lp_mempool"] = use
-        preferenceManager.saveSettings(settings)
-        fetchQuote()
+        fetchWalletBalances() // Refresh balances as mempool status affects them
+        fetchQuote() // Refresh quote as mempool status affects liquidity
     }
 
     fun setSelectedNodeIndex(index: Int) {
         _uiState.value = _uiState.value.copy(selectedNodeIndex = index)
         updateNodeClient()
         fetchQuote()
+    }
+
+    fun deleteNode() {
+        val current = _uiState.value
+        val index = current.selectedNodeIndex
+        if (current.nodes.isEmpty()) return
+        
+        val nodesMap = preferenceManager.loadNodes().toMutableMap()
+        val nodeNameFull = current.nodes[index]
+        val nodeKeyToRemove = if (nodeNameFull.contains(": ")) nodeNameFull.substringBefore(":") else nodeNameFull
+        
+        if (nodesMap.containsKey(nodeKeyToRemove)) {
+            nodesMap.remove(nodeKeyToRemove)
+            preferenceManager.saveNodes(nodesMap)
+            
+            // Re-load nodes after deletion
+            val newNodesMap = if (nodesMap.isEmpty()) com.piggytrade.piggytrade.protocol.NetworkConfig.NODES else nodesMap
+            val newNodesList = newNodesMap.map { "${it.key}: ${(it.value as Map<String, Any>)["url"]}" }
+            
+            val newIndex = (index).coerceAtMost(newNodesList.size - 1).coerceAtLeast(0)
+            
+            _uiState.value = current.copy(
+                nodes = newNodesList,
+                selectedNodeIndex = newIndex
+            )
+            updateNodeClient()
+        }
     }
 
     fun setSelectionContext(context: String) {
@@ -368,22 +417,33 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 val client = nodeClient ?: return@launch
-                val (tokens, nanoerg, _) = client.getMyAssets(address, checkMempool = _uiState.value.useMempool)
+                val (tokens, nanoerg, _) = client.getMyAssets(address, checkMempool = _uiState.value.includeUnconfirmed)
                 _uiState.value = _uiState.value.copy(
                     walletErgBalance = nanoerg.toDouble() / 1_000_000_000.0,
                     walletTokens = tokens,
                     isLoadingWallet = false
                 )
                 updateBalances()
-                loadPoolMappings()
+                // IMPORTANT: Pass fetchLiquidity = false here. 
+                // We only want to update the token list sorting/balances, not refetch every LP.
+                loadPoolMappings(fetchLiquidity = false)
                 
                 tokens.keys.forEach { tid ->
-                    if (tid != "ERG" && tokenRepository.getTokenName(tid).startsWith(tid.take(8))) {
-                        try {
-                            client.api.getTokenInfo(tid)?.let { info ->
-                                tokenRepository.saveTokenInfo(tid, info)
+                    if (tid != "ERG") {
+                        val currentName = tokenRepository.getTokenName(tid)
+                        val isGeneric = currentName.startsWith(tid.take(5)) || currentName == tid
+                        val hasNoDec = tokenRepository.getTokenDecimals(tid) == 0 && tid != "ERG"
+                        
+                        // Only fetch if name is generic OR decimals are missing
+                        if (isGeneric || hasNoDec) {
+                            try {
+                                client.api.getTokenInfo(tid) ?.let { info ->
+                                    tokenRepository.saveTokenInfo(tid, info)
+                                }
+                            } catch (e: Exception) {
+                                Log.e("SwapVM", "Error fetching info for $tid: ${e.message}")
                             }
-                        } catch (e: Exception) {}
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -475,6 +535,22 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     }
 
 
+    fun toggleWalletExpanded() {
+        _uiState.value = _uiState.value.copy(isWalletExpanded = !_uiState.value.isWalletExpanded)
+    }
+
+    fun setNumFavorites(num: Int) {
+        val settings = preferenceManager.loadSettings().toMutableMap()
+        settings[PreferenceManager.KEY_NUM_FAVORITES] = num
+        preferenceManager.saveSettings(settings)
+
+        _uiState.value = _uiState.value.copy(numFavorites = num)
+    }
+
+    fun setActiveSelector(context: String?) {
+        _uiState.value = _uiState.value.copy(activeSelector = context, selectionContext = context ?: "")
+    }
+
     fun toggleEditFavoritesMode() {
         _uiState.value = _uiState.value.copy(isEditFavoritesMode = !_uiState.value.isEditFavoritesMode)
     }
@@ -519,6 +595,12 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 fetchWalletBalances()
                 updateBalances()
             }
+            "node" -> {
+                val index = current.nodes.indexOf(item)
+                if (index != -1) {
+                    setSelectedNodeIndex(index)
+                }
+            }
         }
     }
 
@@ -526,6 +608,10 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         val rawName = name.replace(" (Ergopay)", "").trim()
         val wallets = preferenceManager.loadWallets()
         return wallets[rawName] as? Map<String, Any>
+    }
+
+    fun getWalletAddress(name: String): String {
+        return getWalletData(name)?.get("address") as? String ?: ""
     }
 
     fun deleteWallet(name: String) {
@@ -597,7 +683,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                         amount = amount,
                         orderType = route.orderType,
                         poolType = route.poolType,
-                        checkMempool = current.useLpMempool
+                        checkMempool = current.includeUnconfirmed
                     )
                     withContext(kotlinx.coroutines.Dispatchers.Main) {
                         _uiState.value = _uiState.value.copy(
@@ -738,8 +824,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     poolType = route.poolType,
                     senderAddress = addr,
                     fee = current.minerFee,
-                    useMempool = current.useMempool,
-                    useLpMempool = current.useLpMempool
+                    includeUnconfirmed = current.includeUnconfirmed
                 )
                 Log.i(TAG, "Successfully built transaction.")
 
@@ -907,7 +992,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         
         viewModelScope.launch {
             try {
-                val results = tokenRepository.syncTokensWithBlockchain(client) { current, total, newTokens, batchInfo ->
+                tokenRepository.syncTokensWithBlockchain(client) { current, total, newTokens, batchInfo ->
                     _uiState.value = _uiState.value.copy(
                         syncProgress = _uiState.value.syncProgress?.copy(
                             current = current,
@@ -921,15 +1006,15 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 // Refresh local token list in state
                 tokenRepository.refreshTokens()
                 updateNodeClient() // This refreshes the 'trader' with new token data
-                val updatedTokens = tokenRepository.getAllAssets()
                 
-                _uiState.value = _uiState.value.copy(
-                    tokens = updatedTokens,
-                    syncProgress = _uiState.value.syncProgress?.copy(isFinished = true)
-                )
-                
-                // Refresh balances to catch any now-identified tokens
-                fetchWalletBalances()
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    loadPoolMappings()
+                    _uiState.value = _uiState.value.copy(
+                        syncProgress = _uiState.value.syncProgress?.copy(isFinished = true)
+                    )
+                    // Refresh balances to catch any now-identified tokens
+                    fetchWalletBalances()
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Sync failed", e)
                 _uiState.value = _uiState.value.copy(syncProgress = null)
@@ -978,14 +1063,19 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun loadPoolMappings() {
+    fun loadPoolMappings(fetchLiquidity: Boolean = false) {
         val allTokens = tokenRepository.tokens
-        val whitelisted = mutableListOf<PoolMapping>()
-        val discovered = mutableListOf<PoolMapping>()
+        val whitelistedArr = mutableListOf<PoolMapping>()
+        val discoveredArr = mutableListOf<PoolMapping>()
         
         allTokens.forEach { (key, data) ->
             val pid = data["pid"] as? String ?: (data["lp"] as? String ?: "")
             val status = getVerificationStatus(key)
+            
+            // Find existing liquidity in state to avoid re-fetching or resetting to "Fetching..."
+            val existingState = _uiState.value
+            val existingLiq = (existingState.whitelistedPools + existingState.discoveredPools)
+                .find { it.pid == pid }?.liquidity ?: "Fetching..."
 
             val displayName = if (data.containsKey("id_in")) {
                 val nameIn = data["name_in"] as? String ?: key.split("-").firstOrNull() ?: ""
@@ -1000,22 +1090,57 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             val mapping = PoolMapping(
                 name = displayName,
                 pid = pid,
+                liquidity = existingLiq,
                 isWhitelisted = status < 2,
                 status = status,
-                data = data
+                data = data,
+                key = key
             )
-            if (status < 2) whitelisted.add(mapping) else discovered.add(mapping)
+            if (status < 2) whitelistedArr.add(mapping) else discoveredArr.add(mapping)
         }
         
         val sortComparator = compareByDescending<PoolMapping> { hasUserFunds(it) }.thenBy { it.name }
 
+        val whitelistedAssets = mutableSetOf<String>()
+        whitelistedAssets.add("ERG")
+        whitelistedArr.forEach { mapping ->
+            val name = mapping.name
+            if (mapping.data.containsKey("id_in")) {
+                val parts = name.split("-")
+                whitelistedAssets.add(parts[0])
+                whitelistedAssets.add(parts[1])
+            } else {
+                whitelistedAssets.add(name)
+            }
+        }
+        val tokensWithBalance = mutableListOf<String>()
+        val tokensWithoutBalance = mutableListOf<String>()
+        
+        whitelistedAssets.forEach { name ->
+            if (name == "ERG") return@forEach
+            val tid = getTokenId(name)
+            val balance = _uiState.value.walletTokens[tid] ?: 0L
+            if (balance > 0L) {
+                tokensWithBalance.add(name)
+            } else {
+                tokensWithoutBalance.add(name)
+            }
+        }
+        
+        val finalTokens = mutableListOf<String>()
+        finalTokens.add("ERG")
+        finalTokens.addAll(tokensWithBalance.sorted())
+        finalTokens.addAll(tokensWithoutBalance.sorted())
+
         _uiState.value = _uiState.value.copy(
-            whitelistedPools = whitelisted.sortedWith(sortComparator),
-            discoveredPools = discovered.sortedWith(sortComparator)
+            whitelistedPools = whitelistedArr.sortedWith(sortComparator),
+            discoveredPools = discoveredArr.sortedWith(sortComparator),
+            tokens = finalTokens
         )
         
-        // Removed global background liquidity fetch on startup as requested
-        // fetchLiquidityForAll()
+        if (fetchLiquidity) {
+            fetchLiquidityForAll()
+        }
     }
 
     private fun fetchLiquidityForAll() {
@@ -1027,7 +1152,11 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             (currentWhitelisted + currentDiscovered).forEach { mapping ->
                 launch {
                     try {
-                        val box = client.api.getBoxById(mapping.pid)
+                        val box = client.getPoolBox(mapping.pid, _uiState.value.includeUnconfirmed)
+                        if (box == null) {
+                            updateLiquidityInState(mapping.pid, "Pool not found")
+                            return@launch
+                        }
                         val assets = box["assets"] as? List<Map<String, Any>> ?: emptyList()
                         val erg = (box["value"] as? Number)?.toLong() ?: 0L
                         
@@ -1043,7 +1172,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                                 } else {
                                     tokenAmt.toString()
                                 }
-                                "Available Liquidity: $formattedErg ERG / $formattedToken ${mapping.name}"
+                                "$formattedErg ERG / $formattedToken ${mapping.name}"
                             } else {
                                 // Token to Token
                                 if (assets.size >= 4) {
@@ -1059,13 +1188,13 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                                     val f1 = if (d1 > 0) String.format("%.2f", a1 / Math.pow(10.0, d1.toDouble())) else a1.toString()
                                     val f2 = if (d2 > 0) String.format("%.2f", a2 / Math.pow(10.0, d2.toDouble())) else a2.toString()
                                     
-                                    "Available Liquidity: $f1 $t1Name / $f2 $t2Name"
+                                    "$f1 $t1Name / $f2 $t2Name"
                                 } else {
-                                    "Available Liquidity: ${String.format("%.2f", erg / 1_000_000_000.0)} ERG"
+                                    "${String.format("%.2f", erg / 1_000_000_000.0)} ERG"
                                 }
                             }
                         } else {
-                            "Available Liquidity: ${String.format("%.2f", erg / 1_000_000_000.0)} ERG"
+                            "${String.format("%.2f", erg / 1_000_000_000.0)} ERG"
                         }
                         
                         updateLiquidityInState(mapping.pid, liqStr)
@@ -1090,18 +1219,44 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
     fun togglePoolWhitelist(mapping: PoolMapping, shouldWhitelist: Boolean, newName: String? = null) {
         if (mapping.status == 0) return // Locked
-        viewModelScope.launch {
-            val updatedData = mapping.data.toMutableMap()
-            updatedData["user_added"] = shouldWhitelist
-            updatedData["whitelisted"] = shouldWhitelist
-            if (newName != null) updatedData["name"] = newName
-            
-            // Save to repository (this will update JSON files)
-            tokenRepository.updateTokenData(newName ?: mapping.name, updatedData)
-            
-            // Refresh local state
-            tokenRepository.refreshTokens()
-            loadPoolMappings()
+        Log.d(TAG, "togglePoolWhitelist: key=${mapping.key}, shouldWhitelist=$shouldWhitelist")
+        
+        // Optimistic UI Update
+        _uiState.value = _uiState.value.copy(
+            whitelistedPools = if (shouldWhitelist) {
+               val exists = _uiState.value.whitelistedPools.any { it.key == mapping.key }
+               if (!exists) _uiState.value.whitelistedPools + mapping.copy(status = 1, isWhitelisted = true) else _uiState.value.whitelistedPools
+            } else _uiState.value.whitelistedPools.filter { it.key != mapping.key },
+            discoveredPools = if (shouldWhitelist) _uiState.value.discoveredPools.filter { it.key != mapping.key } else {
+               val exists = _uiState.value.discoveredPools.any { it.key == mapping.key }
+               if (!exists) _uiState.value.discoveredPools + mapping.copy(status = 2, isWhitelisted = false) else _uiState.value.discoveredPools
+            }
+        )
+
+        viewModelScope.launch(kotlinx.coroutines.CoroutineExceptionHandler { _, throwable ->
+            Log.e(TAG, "Error updating whitelist", throwable)
+        }) {
+            try {
+                val updatedData = mapping.data.toMutableMap()
+                updatedData["user_added"] = shouldWhitelist
+                updatedData["whitelisted"] = shouldWhitelist
+                
+                if (newName != null && newName != mapping.key) {
+                    updatedData["name"] = newName
+                    tokenRepository.renameTokenData(mapping.key, newName, updatedData)
+                } else {
+                    tokenRepository.updateTokenData(mapping.key, updatedData)
+                }
+                
+                loadPoolMappings(fetchLiquidity = false)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to save whitelist change", e)
+            }
         }
+    }
+
+    fun resetTokenData() {
+        tokenRepository.resetTokenData()
+        loadPoolMappings()
     }
 }

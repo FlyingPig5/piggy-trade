@@ -16,6 +16,7 @@ class PreferenceManager(context: Context) {
         private const val KEY_SETTINGS = "settings"
         private const val KEY_SELECTED_NODE = "selected_node"
         private const val KEY_SELECTED_WALLET = "selected_wallet"
+        const val KEY_NUM_FAVORITES = "num_favorites"
     }
 
     fun saveWallets(wallets: Map<String, Any>) {

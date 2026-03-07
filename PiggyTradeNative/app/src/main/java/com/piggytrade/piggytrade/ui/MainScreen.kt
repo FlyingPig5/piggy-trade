@@ -23,8 +23,16 @@ import com.piggytrade.piggytrade.R
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
 
 @Composable
 fun MainScreen(
@@ -39,6 +47,7 @@ fun MainScreen(
     val uiState by viewModel.uiState.collectAsState()
     val scrollState = rememberScrollState()
     val context = androidx.compose.ui.platform.LocalContext.current
+    var showBetaDisclaimer by remember { mutableStateOf(false) }
 
     if (uiState.syncProgress != null) {
         SyncProgressPopup(uiState.syncProgress!!, onDismiss = { viewModel.dismissSyncPopup() })
@@ -58,420 +67,339 @@ fun MainScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
                 .background(ColorBg)
+                .graphicsLayer {
+                    if (uiState.activeSelector != null) {
+                        renderEffect = null // Fallback
+                    }
+                }
+                .blur(if (uiState.activeSelector != null) 10.dp else 0.dp)
                 .verticalScroll(scrollState)
         ) {
-            // Wallet Card
+            // Wallet Card - Single Box Redesign
             WalletCard {
-                TogaRow(
-                    modifier = Modifier.padding(bottom = 2.dp),
-                    horizontalArrangement = Arrangement.Center
-                ) {
-                    Text(
-                        text = "WALLET",
-                        color = ColorText,
-                        style = Typography.titleMedium,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                TogaRow(
+                // Sub-Row for interactivity
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 5.dp),
-                    horizontalArrangement = Arrangement.Start,
+                        .padding(horizontal = 20.dp, vertical = 5.dp)
+                        .height(50.dp)
+                        .androidBorder(radius = 12.dp, borderWidth = 0.dp, bgColor = ColorInputBg),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // btn_wallet_sel
-                    Box(
+                    // LEFT: Wallet Selection Zone
+                    Row(
                         modifier = Modifier
                             .weight(1f)
-                            .height(50.dp)
-                            .androidBorder(radius = 12.dp, borderWidth = 1.dp, borderColor = Color(0xFF535C6E), bgColor = ColorInputBg)
-                            .clickable(
-                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                                indication = androidx.compose.material.ripple.rememberRipple(bounded = true, radius = 12.dp),
-                                onClick = onNavigateToWalletSelector
-                            ),
-                        contentAlignment = Alignment.CenterStart
+                            .fillMaxHeight()
+                            .clickable { viewModel.setActiveSelector("wallet") } // RESTORED SELECTOR
+                            .padding(start = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = uiState.selectedWallet.ifEmpty { "Select Wallet" },
-                            color = Color.White,
-                            fontSize = 12.sp, // FONT_SIZE_MD from theme.py
-                            modifier = Modifier.padding(start = 25.dp) // h_padding=25 from Python
-                        )
-                    }
-                    // btn_add_w
-                    TogaIconButton(
-                        icon = "\uE145", // ICON_PLUS
-                        onClick = onNavigateToAddWallet,
-                        modifier = Modifier.padding(start = 8.dp).size(50.dp),
-                        radius = 10.dp,
-                        borderColor = Color(0xFF535C6E)
-                    )
-                }
-
-                TogaRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp)
-                        .padding(bottom = 2.dp),
-                    horizontalArrangement = Arrangement.Start,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // inp_address
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(50.dp)
-                            .androidBorder(radius = 10.dp, borderWidth = 1.dp, borderColor = Color(0xFF535C6E), bgColor = ColorInputBg),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        BasicTextField(
-                            value = uiState.selectedAddress,
-                            onValueChange = { if (uiState.selectedWallet == "ErgoPay") viewModel.setSelectedAddress(it) },
-                            modifier = Modifier.fillMaxWidth().padding(start = 10.dp),
-                            textStyle = TextStyle(fontSize = 10.sp, color = ColorInputText),
-                            cursorBrush = SolidColor(Color.White),
-                            readOnly = uiState.selectedWallet != "ErgoPay",
-                            decorationBox = { innerTextField ->
-                                if (uiState.selectedAddress.isEmpty()) {
-                                    Text("Enter wallet Address", color = ColorInputHint, fontSize = 10.sp)
+                        Column(
+                            modifier = Modifier.padding(start = 0.dp)
+                        ) {
+                            val walletName = uiState.selectedWallet.ifEmpty { "Select Wallet" }
+                            Text(
+                                text = walletName.replace(" (Ergopay)", ""),
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                            )
+                            if (uiState.selectedAddress.isNotEmpty()) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = uiState.selectedAddress.take(7) + "...",
+                                        color = ColorTextDim,
+                                        fontSize = 10.sp
+                                    )
+                                    if (uiState.isLoadingWallet) {
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(12.dp),
+                                            color = ColorAccent,
+                                            strokeWidth = 2.dp
+                                        )
+                                    }
                                 }
-                                innerTextField()
                             }
+                        }
+                    }
+
+                    // RIGHT: Actions (Add & Info)
+                    Row(
+                        modifier = Modifier.padding(end = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TogaIconButton(
+                            icon = "\uE145", // PLUS
+                            onClick = onNavigateToAddWallet,
+                            modifier = Modifier.size(38.dp),
+                            radius = 8.dp,
+                            borderColor = ColorBorder,
+                            bgColor = Color.Transparent
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        TogaIconButton(
+                            icon = "\uF8FF", // WALLET
+                            onClick = { 
+                                if (uiState.selectedWallet.isNotEmpty() && uiState.selectedWallet != "Select Wallet") {
+                                    onNavigateToWalletInfo(uiState.selectedWallet)
+                                }
+                            },
+                            modifier = Modifier.size(38.dp),
+                            radius = 8.dp,
+                            borderColor = ColorBorder,
+                            bgColor = Color.Transparent,
+                            enabled = uiState.selectedWallet.isNotEmpty() && uiState.selectedWallet != "Select Wallet"
                         )
                     }
-                    // btn_view_w
-                    TogaIconButton(
-                        icon = "\uF8FF", // ICON_WALLET
-                        onClick = { 
-                            if (uiState.selectedWallet != "Select Wallet" && uiState.selectedWallet.isNotEmpty()) {
-                                onNavigateToWalletInfo(uiState.selectedWallet)
-                            }
-                        },
-                        modifier = Modifier.padding(start = 8.dp).size(50.dp),
-                        radius = 10.dp,
-                        borderColor = Color(0xFF535C6E)
-                    )
                 }
             }
 
             // Trade Card
             TradeCard {
-                // Favorites Grid: 2 rows of 4
-                TogaColumn(
-                    modifier = Modifier.fillMaxWidth().padding(top = 1.dp, bottom = 1.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    val rows = uiState.favorites.chunked(4)
-                    rows.forEachIndexed { rowIndex, rowItems ->
-                        TogaRow(
-                            horizontalArrangement = Arrangement.Center,
-                            modifier = Modifier.padding(bottom = 2.dp)
+                Box(contentAlignment = Alignment.Center) {
+                    Column {
+                        // FROM section
+                        TogaColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp)
                         ) {
-                            rowItems.forEachIndexed { colIndex, fav ->
-                                val index = rowIndex * 4 + colIndex
-                                FavoriteButton(
-                                    index = index,
-                                    fav = fav,
-                                    isSelected = uiState.firstFavoriteSelectedIndex == index,
-                                    onClick = { 
-                                        if (uiState.isEditFavoritesMode && index != 0) {
-                                            viewModel.startEditingFavorite(index)
-                                            onNavigateToTokenSelector("fav")
-                                        } else {
-                                            viewModel.handleFavClick(index, fav)
+                            // Favorites: Single Line Scrollable (Moved and Resized)
+                            LazyRow(
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                itemsIndexed(uiState.favorites.take(uiState.numFavorites)) { index, fav ->
+                                    FavoriteButton(
+                                        index = index,
+                                        fav = fav,
+                                        isSelected = uiState.firstFavoriteSelectedIndex == index,
+                                        onClick = { viewModel.handleFavClick(index, fav) },
+                                        onLongClick = {
+                                            if (index != 0) {
+                                                viewModel.startEditingFavorite(index)
+                                                viewModel.setActiveSelector("fav")
+                                            }
+                                        },
+                                        vm = viewModel
+                                    )
+                                }
+                            }
+                            // pulse logic
+                            var fromFlash by remember { mutableStateOf(false) }
+                            LaunchedEffect(uiState.fromPulseTrigger) {
+                                if (uiState.fromPulseTrigger > 0) {
+                                    fromFlash = true
+                                    kotlinx.coroutines.delay(200)
+                                    fromFlash = false
+                                }
+                            }
+                            val fromBgColor by animateColorAsState(
+                                targetValue = if (fromFlash) Color(0xFF1B4D3E) else ColorInputBg,
+                                animationSpec = tween(durationMillis = 200)
+                            )
+
+                            // from_top_row (Merged Amount + Token Selector + Balance)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(85.dp)
+                                    .androidBorder(radius = 12.dp, borderWidth = 0.dp, bgColor = fromBgColor), // Removed border
+                            ) {
+                                Column(modifier = Modifier.fillMaxSize().padding(10.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        BasicTextField(
+                                            value = uiState.fromAmount,
+                                            onValueChange = { viewModel.setFromAmount(it) },
+                                            modifier = Modifier.weight(1f),
+                                            textStyle = TextStyle(fontSize = 18.sp, color = Color.White, fontWeight = FontWeight.Bold),
+                                            cursorBrush = SolidColor(Color.White),
+                                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
+                                            decorationBox = { innerTextField ->
+                                                Box(contentAlignment = Alignment.CenterStart) {
+                                                    if (uiState.fromAmount.isEmpty()) {
+                                                        Text("0.0", color = ColorInputHint, fontSize = 18.sp)
+                                                    }
+                                                    innerTextField()
+                                                }
+                                            }
+                                        )
+
+                                        // btn_from
+                                        TogaRow(
+                                            modifier = Modifier
+                                                .width(140.dp)
+                                                .height(42.dp) // Reduced height
+                                                .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = ColorSelectionBg)
+                                                .clickable { viewModel.setActiveSelector("from") }
+                                                .padding(horizontal = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.Center
+                                        ) {
+                                            TokenImage(tokenId = viewModel.getTokenId(uiState.fromAsset), modifier = Modifier.size(24.dp).padding(end = 5.dp))
+                                            val baseName = if (uiState.fromAsset.isNotEmpty()) viewModel.getTokenName(viewModel.getTokenId(uiState.fromAsset)) else "SELECT"
+                                            Text(text = baseName, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                            Icon(painter = painterResource(id = android.R.drawable.arrow_down_float), contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp).padding(start = 4.dp))
                                         }
-                                    },
-                                    vm = viewModel
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Edit Favorites Switch
-                TogaRow(
-                    modifier = Modifier.padding(start = 22.dp, bottom = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Edit Favorites",
-                        color = ColorText,
-                        fontSize = 10.sp // FONT_SIZE_BASE
-                    )
-                    Switch(
-                        checked = uiState.isEditFavoritesMode,
-                        onCheckedChange = { viewModel.toggleEditFavoritesMode() },
-                        modifier = Modifier.scale(0.8f).padding(start = 5.dp)
-                    )
-
-                    if (uiState.debugMode) {
-                        Spacer(modifier = Modifier.width(20.dp))
-                        Text(
-                            text = "Wallet",
-                            color = ColorText,
-                            fontSize = 10.sp
-                        )
-                        Switch(
-                            checked = uiState.useMempool,
-                            onCheckedChange = { viewModel.setUseMempool(it) },
-                            modifier = Modifier.scale(0.8f).padding(start = 2.dp)
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = "LP",
-                            color = ColorText,
-                            fontSize = 10.sp
-                        )
-                        Switch(
-                            checked = uiState.useLpMempool,
-                            onCheckedChange = { viewModel.setUseLpMempool(it) },
-                            modifier = Modifier.scale(0.8f).padding(start = 2.dp)
-                        )
-                    }
-                }
-
-                // FROM section
-                TogaColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp)
-                ) {
-                     TogaRow(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 5.dp, vertical = 5.dp).padding(bottom = 2.dp),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(text = "Balance: ${uiState.fromBalance}", color = ColorTextDim, fontSize = 8.sp, modifier = Modifier.padding(end = 10.dp))
-                        Box(
-                            modifier = Modifier
-                                .androidBorder(radius = 10.dp, borderWidth = 1.dp, borderColor = Color(0xFF535C6E), bgColor = ColorInputBg)
-                                .clickable { viewModel.setMaxAmount() }
-                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            Text(text = "MAX", color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-
-                    // pulse logic
-                    var fromFlash by remember { mutableStateOf(false) }
-                    LaunchedEffect(uiState.fromPulseTrigger) {
-                        if (uiState.fromPulseTrigger > 0) {
-                            fromFlash = true
-                            kotlinx.coroutines.delay(200)
-                            fromFlash = false
-                        }
-                    }
-                    val fromBgColor by animateColorAsState(
-                        targetValue = if (fromFlash) Color(0xFF1B4D3E) else ColorInputBg,
-                        animationSpec = tween(durationMillis = 200)
-                    )
-
-                    // from_top_row (Merged Amount + Token Selector)
-                    TogaRow(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(65.dp)
-                            .androidBorder(radius = 10.dp, borderWidth = 1.dp, borderColor = Color(0xFF535C6E), bgColor = fromBgColor),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        BasicTextField(
-                            value = uiState.fromAmount,
-                            onValueChange = { viewModel.setFromAmount(it) },
-                            modifier = Modifier.weight(1f).padding(start = 15.dp),
-                            textStyle = TextStyle(fontSize = 16.sp, color = Color.White),
-                            cursorBrush = SolidColor(Color.White),
-                            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal),
-                            decorationBox = { innerTextField ->
-                                Box(contentAlignment = Alignment.CenterStart) {
-                                    if (uiState.fromAmount.isEmpty()) {
-                                        Text("0.0", color = ColorInputHint, fontSize = 16.sp)
                                     }
-                                    innerTextField()
+
+                                    Spacer(modifier = Modifier.height(6.dp)) // Reduced spacing
+
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(text = "Balance: ${uiState.fromBalance}", color = ColorTextDim, fontSize = 10.sp)
+                                        Spacer(modifier = Modifier.weight(1f))
+                                        Text(
+                                            text = "MAX",
+                                            color = ColorAccent,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.clickable { viewModel.setMaxAmount() }
+                                        )
+                                    }
                                 }
                             }
-                        )
+                        }
 
-                        // btn_from
-                        TogaRow(
+                        Spacer(modifier = Modifier.height(8.dp)) // Small gap for the overlay button
+
+                        // TO section
+                        TogaColumn(
                             modifier = Modifier
-                                .width(130.dp)
-                                .fillMaxHeight()
-                                .clickable(
-                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                                    indication = androidx.compose.material.ripple.rememberRipple(bounded = true, radius = 10.dp),
-                                    onClick = { onNavigateToTokenSelector("from") }
-                                ),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp)
+                                .padding(bottom = 10.dp)
                         ) {
-                            val status = viewModel.getVerificationStatus(uiState.fromAsset)
-                            TokenImage(tokenId = viewModel.getTokenId(uiState.fromAsset), modifier = Modifier.size(24.dp).padding(end = 5.dp))
-                            val baseName = if (uiState.fromAsset.isNotEmpty()) viewModel.getTokenName(viewModel.getTokenId(uiState.fromAsset)) else "SELECT"
-                            
-                             val (nameColor, labelText) = when (status) {
-                                 0 -> Color.White to ""
-                                 1 -> Color.White to " (user added)"
-                                 else -> Color.White to "" // Hide "unverified" for selected asset
-                             }
+                            var toFlash by remember { mutableStateOf(false) }
+                            LaunchedEffect(uiState.toPulseTrigger) {
+                                if (uiState.toPulseTrigger > 0) {
+                                    toFlash = true
+                                    kotlinx.coroutines.delay(200)
+                                    toFlash = false
+                                }
+                            }
+                            val toBgColor by animateColorAsState(
+                                targetValue = if (toFlash) Color(0xFF1B4D3E) else ColorInputBg,
+                                animationSpec = tween(durationMillis = 200)
+                            )
 
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = baseName,
-                                    color = nameColor,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                if (labelText.isNotEmpty()) {
-                                    Text(
-                                        text = labelText,
-                                        color = ColorOrange,
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Normal,
-                                        modifier = Modifier.padding(start = 2.dp)
-                                    )
+                            // to_top_row
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(85.dp) // Increased height
+                                    .androidBorder(radius = 12.dp, borderWidth = 0.dp, bgColor = toBgColor), // Removed border
+                            ) {
+                                Column(modifier = Modifier.fillMaxSize().padding(10.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = uiState.toQuote,
+                                            color = ColorAccent,
+                                            fontSize = 18.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.weight(1f)
+                                        )
+
+                                        // btn_to
+                                        TogaRow(
+                                            modifier = Modifier
+                                                .width(140.dp)
+                                                .height(42.dp) // Reduced height
+                                                .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = ColorSelectionBg)
+                                                .clickable { viewModel.setActiveSelector("to") }
+                                                .padding(horizontal = 10.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.Center
+                                        ) {
+                                            TokenImage(tokenId = viewModel.getTokenId(uiState.toAsset), modifier = Modifier.size(24.dp).padding(end = 5.dp))
+                                            val baseName = if (uiState.toAsset.isNotEmpty()) viewModel.getTokenName(viewModel.getTokenId(uiState.toAsset)) else "SELECT"
+                                            Text(text = baseName, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                            Icon(painter = painterResource(id = android.R.drawable.arrow_down_float), contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp).padding(start = 4.dp))
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(6.dp)) // Reduced spacing
+
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(text = "Balance: ${uiState.toBalance}", color = ColorTextDim, fontSize = 10.sp)
+                                        Spacer(modifier = Modifier.weight(1f))
+                                        if (uiState.isToAssetFavorite) {
+                                            Text(text = "FAVORITE", color = ColorAccent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                // MID ROW (Swap Arrow)
-                TogaRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 5.dp),
-                    horizontalArrangement = Arrangement.Center
-                ) {
+                    // SWAP BUTTON OVERLAY
                     TogaIconButton(
-                        icon = String(Character.toChars(0xFFFA3)), // ICON_SWAP_VERT from theme.py
+                        icon = "\uE8D5", // Material swap_vert
                         onClick = { viewModel.swapDirection() },
-                        modifier = Modifier.size(42.dp),
-                        radius = 21.dp, // Circle
-                        borderColor = Color(0xFF535C6E)
+                        modifier = Modifier
+                            .size(40.dp)
+                            .offset(y = 24.dp), // Positions button over the seam
+                        iconSize = 24.dp,
+                        iconColor = Color.White,
+                        radius = 20.dp,
+                        borderWidth = 0.dp,
+                        bgColor = ColorCard
                     )
                 }
 
+                // Status Box - Price Impact & Miner Fee
                 TogaColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp)
-                        .padding(bottom = 2.dp)
+                        .padding(horizontal = 20.dp, vertical = 5.dp)
+                        .androidBorder(radius = 12.dp, borderWidth = 0.dp, bgColor = ColorSelectionBg.copy(alpha = 0.8f))
+                        .padding(15.dp)
                 ) {
-                    var toFlash by remember { mutableStateOf(false) }
-                    LaunchedEffect(uiState.toPulseTrigger) {
-                        if (uiState.toPulseTrigger > 0) {
-                            toFlash = true
-                            kotlinx.coroutines.delay(200)
-                            toFlash = false
-                        }
-                    }
-                    val toBgColor by animateColorAsState(
-                        targetValue = if (toFlash) Color(0xFF1B4D3E) else ColorInputBg,
-                        animationSpec = tween(durationMillis = 200)
-                    )
-
-                    // to_top_row
                     TogaRow(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(65.dp)
-                            .androidBorder(radius = 12.dp, borderWidth = 1.dp, borderColor = Color(0xFF535C6E), bgColor = toBgColor),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
+                        Text(text = "Price Impact:", color = ColorText, fontSize = 11.sp)
+                        val impactColor = if (uiState.priceImpact < 1.0) Color(0xFF00D18B) else if (uiState.priceImpact > 5.0) Color.Red else Color.White
                         Text(
-                            text = uiState.toQuote,
-                            color = ColorAccent, // LBL_QUOTE_FONT_COLOR
-                            fontSize = 16.sp, // FONT_SIZE_XL
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(start = 15.dp)
+                            text = "${String.format("%.2f", uiState.priceImpact)}%",
+                            color = impactColor,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
                         )
-
-                        TogaRow(
-                            modifier = Modifier
-                                .width(130.dp)
-                                .fillMaxHeight()
-                                .clickable(
-                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                                    indication = androidx.compose.material.ripple.rememberRipple(bounded = true, radius = 10.dp),
-                                    onClick = { onNavigateToTokenSelector("to") }
-                                ),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            val status = viewModel.getVerificationStatus(uiState.toAsset)
-                            TokenImage(tokenId = viewModel.getTokenId(uiState.toAsset), modifier = Modifier.size(24.dp).padding(end = 5.dp))
-                            val baseName = if (uiState.toAsset.isNotEmpty()) viewModel.getTokenName(viewModel.getTokenId(uiState.toAsset)) else "SELECT"
-                            
-                             val (nameColor, labelText) = when (status) {
-                                 0 -> Color.White to ""
-                                 1 -> Color.White to " (user added)"
-                                 else -> Color.White to "" // Hide "unverified" for selected asset
-                             }
-
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = baseName,
-                                    color = nameColor,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                if (labelText.isNotEmpty()) {
-                                    Text(
-                                        text = labelText,
-                                        color = ColorOrange,
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Normal,
-                                        modifier = Modifier.padding(start = 2.dp)
-                                    )
-                                }
-                            }
-                        }
                     }
+
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     TogaRow(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 5.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
+                        Text(text = "Miner Fee:", color = ColorText, fontSize = 11.sp)
                         Text(
-                            text = "Impact: ${uiState.priceImpact}%", 
-                            color = if (uiState.priceImpact > 5.0) Color.Red else ColorTextDim, 
-                            fontSize = 8.sp,
-                            fontWeight = if (uiState.priceImpact > 5.0) FontWeight.Bold else FontWeight.Normal
+                            text = "${String.format("%.3f", uiState.minerFee)} ERG",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
                         )
-                        Text(text = "Balance: ${uiState.toBalance}", color = ColorTextDim, fontSize = 8.sp)
                     }
-                }
 
-                // Miner Fee
-                TogaRow(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(text = "Miner Fee:", color = ColorText, fontSize = 10.sp)
                     Slider(
                         value = uiState.minerFee.toFloat(),
                         onValueChange = { viewModel.setMinerFee(it.toDouble()) },
-                        valueRange = 0.001f..0.5f,
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 10.dp)
+                        valueRange = 0.001f..0.2f, // Adjusted range
+                        modifier = Modifier.fillMaxWidth()
                     )
-                    Text(
-                        text = "${String.format("%.3f", uiState.minerFee)} ERG",
-                        color = ColorText,
-                        fontSize = 10.sp,
-                        modifier = Modifier.width(80.dp)
-                    )
+                    TogaRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(text = "Slow", color = ColorTextDim, fontSize = 9.sp)
+                        Text(text = "Fast", color = ColorTextDim, fontSize = 9.sp)
+                    }
                 }
 
                 if (uiState.debugMode) {
@@ -516,18 +444,11 @@ fun MainScreen(
                 // Submit Button
                 Button(
                     onClick = {
-                        viewModel.prepareSwap(
-                            onSuccess = {
-                                onSubmit()
-                            },
-                            onError = { err ->
-                                android.widget.Toast.makeText(context, err, android.widget.Toast.LENGTH_LONG).show()
-                            }
-                        )
+                        showBetaDisclaimer = true
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 10.dp)
+                        .padding(horizontal = 20.dp, vertical = 20.dp)
                         .height(55.dp),
                     enabled = !uiState.isBuildingTx,
                     shape = RoundedCornerShape(12.dp),
@@ -539,13 +460,129 @@ fun MainScreen(
                             uiState.isSimulation -> "SIMULATE"
                             else -> "SUBMIT"
                         },
-                        color = ColorBg, // BTN_SUBMIT_FONT_COLOR
-                        fontSize = 16.sp, // FONT_SIZE_XL
+                        color = ColorBg,
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.Bold
                     )
                 }
             }
         }
+
+        // Animated Popup Selector
+        androidx.compose.animation.AnimatedVisibility(
+            visible = uiState.activeSelector != null,
+            enter = androidx.compose.animation.slideInVertically(initialOffsetY = { it }, animationSpec = tween(400)),
+            exit = androidx.compose.animation.slideOutVertically(targetOffsetY = { it }, animationSpec = tween(400))
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable { viewModel.setActiveSelector(null) }
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .fillMaxHeight(0.75f)
+                        .align(Alignment.BottomCenter)
+                        .background(ColorBg, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                        .clickable(
+                            indication = null,
+                            interactionSource = remember { MutableInteractionSource() }
+                        ) { /* Consume click to prevent closing */ }
+                ) {
+                    when (uiState.activeSelector) {
+                        "from", "to", "fav" -> {
+                            SelectorScreen(
+                                title = "Select Token",
+                                items = uiState.tokens,
+                                onSelect = { token ->
+                                    viewModel.finalizeSelection(token)
+                                    viewModel.setActiveSelector(null)
+                                },
+                                onBack = { viewModel.setActiveSelector(null) },
+                                getName = { viewModel.getTokenName(viewModel.getTokenId(it)) },
+                                getId = { viewModel.getTokenId(it) },
+                                getBalance = { viewModel.getUserBalance(it) },
+                                getVerificationStatus = { viewModel.getVerificationStatus(it) }
+                            )
+                        }
+                        "wallet" -> {
+                            SelectorScreen(
+                                title = "Select Wallet",
+                                items = uiState.wallets,
+                                onSelect = { wallet ->
+                                    viewModel.finalizeSelection(wallet)
+                                    viewModel.setActiveSelector(null)
+                                },
+                                onBack = { viewModel.setActiveSelector(null) },
+                                getName = { it },
+                                getId = { viewModel.getWalletAddress(it) }, // Pass real address
+                                getBalance = { null }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showBetaDisclaimer) {
+        AlertDialog(
+            onDismissRequest = { showBetaDisclaimer = false },
+            title = { 
+                Text(
+                    "⚠️ Beta Version Warning", 
+                    color = Color.White, 
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                ) 
+            },
+            text = {
+                Column {
+                    Text(
+                        "This is a Beta Version which may have errors. You must validate and check the output carefully.",
+                        color = Color.White,
+                        fontSize = 14.sp
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "Any submitted transactions are IRREVERSIBLE on the blockchain.",
+                        color = ColorAccent, // Using neon green/accent for emphasis
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                }
+            },
+            containerColor = ColorCard,
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showBetaDisclaimer = false
+                        viewModel.prepareSwap(
+                            onSuccess = {
+                                onSubmit()
+                            },
+                            onError = { err ->
+                                android.widget.Toast.makeText(context, err, android.widget.Toast.LENGTH_LONG).show()
+                            }
+                        )
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ColorAccent)
+                ) {
+                    Text("Agree & Continue", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { 
+                        showBetaDisclaimer = false 
+                    }
+                ) {
+                    Text("Disagree", color = Color.White)
+                }
+            }
+        )
     }
 }
 
@@ -596,36 +633,39 @@ fun PiggyTopBar(isLoading: Boolean, onSettingsClick: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun FavoriteButton(index: Int, fav: String, isSelected: Boolean, onClick: () -> Unit, vm: SwapViewModel) {
+fun FavoriteButton(index: Int, fav: String, isSelected: Boolean, onClick: () -> Unit, onLongClick: () -> Unit, vm: SwapViewModel) {
     val bgColor by animateColorAsState(
         targetValue = if (isSelected) ColorAccent else ColorInputBg,
         animationSpec = tween(durationMillis = 200)
     )
-    val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-
+    
     Box(
         modifier = Modifier
-            .padding(horizontal = 2.dp)
-            .size(width = 88.dp, height = 45.dp)
-            .androidBorder(radius = 10.dp, borderWidth = 1.dp, borderColor = Color(0xFF535C6E), bgColor = bgColor)
-            .clickable(
-                interactionSource = interactionSource,
-                indication = androidx.compose.material.ripple.rememberRipple(bounded = true, radius = 10.dp),
-                onClick = onClick
+            .size(width = 75.dp, height = 42.dp) // Approx 1/3rd of 115dp asset height
+            .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = bgColor)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
             ),
         contentAlignment = Alignment.Center
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TokenImage(tokenId = vm.getTokenId(fav), modifier = Modifier.size(if (index == 0) 36.dp else 30.dp))
-            if (fav != "ERG" && fav != "?") {
-                val displayName = vm.getTokenName(vm.getTokenId(fav))
-                Text(
-                    text = if (displayName.length > 5) displayName.take(5) + ".." else displayName,
-                    color = Color.White,
-                    fontSize = 10.sp,
-                    modifier = Modifier.padding(start = 4.dp)
-                )
+        if (fav == "?") {
+            // Blank box
+            Box(modifier = Modifier.fillMaxSize())
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TokenImage(tokenId = vm.getTokenId(fav), modifier = Modifier.size(if (index == 0) 24.dp else 22.dp))
+                if (fav != "ERG") {
+                    val displayName = vm.getTokenName(vm.getTokenId(fav))
+                    Text(
+                        text = if (displayName.length > 5) displayName.take(5) + "." else displayName,
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        modifier = Modifier.padding(start = 4.dp)
+                    )
+                }
             }
         }
     }
