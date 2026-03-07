@@ -1,0 +1,551 @@
+package com.piggytrade.piggytrade.data
+
+import android.content.Context
+import android.util.Log
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import com.piggytrade.piggytrade.blockchain.TradeMapper
+import com.piggytrade.piggytrade.network.NodeClient
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
+import java.io.InputStreamReader
+
+class TokenRepository(private val context: Context) {
+    private val gson = Gson()
+    private val cacheFile = File(context.filesDir, "tokens_cache.json")
+    private val ergToTokenFile = File(context.filesDir, "erg_to_token.json")
+    private val tokenToTokenFile = File(context.filesDir, "token_to_token.json")
+    private val whitelistFile = File(context.filesDir, "custom_whitelist.json")
+
+    private val systemWhitelistPids by lazy { loadSystemWhitelistPids() }
+    private var customWhitelistPids: MutableSet<String> = loadCustomWhitelistPids().toMutableSet()
+
+    private fun loadSystemWhitelistPids(): Set<String> {
+        val pids = mutableSetOf<String>()
+        
+        // Add hardcoded special token PIDs (from NetworkConfig)
+        pids.add(com.piggytrade.piggytrade.protocol.NetworkConfig.USE_CONFIG["lp_nft"] as String)
+        pids.add(com.piggytrade.piggytrade.protocol.NetworkConfig.DEXYGOLD_CONFIG["lp_nft"] as String)
+        
+        try {
+            val inputStream = context.assets.open("tokens.json")
+            val type = object : TypeToken<Map<String, Map<String, Any>>>() {}.type
+            val data: Map<String, Map<String, Any>> = gson.fromJson(InputStreamReader(inputStream), type)
+            pids.addAll(data.values.mapNotNull { it["pid"] as? String })
+        } catch (e: Exception) {
+            Log.e("TokenRepo", "Error loading tokens.json: ${e.message}")
+        }
+        return pids
+    }
+
+    private fun loadCustomWhitelistPids(): Set<String> {
+        return try {
+            if (!whitelistFile.exists()) return emptySet()
+            val type = object : TypeToken<Set<String>>() {}.type
+            gson.fromJson(whitelistFile.readText(), type) ?: emptySet()
+        } catch (e: Exception) {
+            emptySet()
+        }
+    }
+
+    fun saveCustomWhitelist(pids: Set<String>) {
+        customWhitelistPids = pids.toMutableSet()
+        whitelistFile.writeText(gson.toJson(customWhitelistPids))
+    }
+
+    fun isPidWhitelisted(pid: String): Boolean {
+        return systemWhitelistPids.contains(pid) || customWhitelistPids.contains(pid)
+    }
+
+    fun isSystemVerified(pid: String): Boolean = systemWhitelistPids.contains(pid)
+    fun isUserVerified(pid: String): Boolean = customWhitelistPids.contains(pid)
+
+    /**
+     * Returns verification status of a token:
+     * 0: Official (System Whitelisted)
+     * 1: User Added (Custom Whitelisted)
+     * 2: Unverified
+     */
+    fun getVerificationStatus(tokenKey: String): Int {
+        if (tokenKey == "ERG") return 0
+        if (tokenKey.equals("USE", ignoreCase = true) || tokenKey.equals("DexyGold", ignoreCase = true)) return 0
+        
+        val data = tokens[tokenKey] ?: return 2
+        if (data["official"] as? Boolean == true) return 0
+        if (data["user_added"] as? Boolean == true) return 1
+        return 2
+    }
+
+    data class BlockchainBox(
+        val boxId: String,
+        val assets: List<BlockchainAsset>,
+        val additionalRegisters: Map<String, String>
+    )
+
+    data class BlockchainAsset(
+        val tokenId: String,
+        val amount: Long
+    )
+
+    data class BlockchainTokenInfo(
+        val id: String,
+        val name: String?,
+        val decimals: Int
+    )
+
+    private fun decodeVlqZigZag(hex: String): Int {
+        if (hex.length < 2) return 0
+        // Skip the first byte (Sigma type header, e.g., 04 for Int)
+        val bytes = try { 
+            hex.substring(2).chunked(2).map { it.toInt(16) }
+        } catch (e: Exception) { emptyList() }
+        
+        var res = 0
+        var shift = 0
+        for (b in bytes) {
+            res = res or ((b and 0x7F) shl shift)
+            if ((b and 0x80) == 0) break
+            shift += 7
+        }
+        return res ushr 1
+    }
+
+    suspend fun syncTokensWithBlockchain(
+        nodeClient: NodeClient,
+        onProgress: (current: Int, total: Int, newTokens: List<String>, batchInfo: String) -> Unit
+    ): Map<String, Int> {
+        onProgress(0, -1, emptyList(), "Fetching ERG-Token pool boxes...")
+        val ergToTokenBoxes = fetchAllBoxesForAddress(nodeClient, ADDR_ERG_TO_TOKEN) { batch ->
+            onProgress(0, -1, emptyList(), "ERG-Token pools: offset $batch")
+        }
+        onProgress(0, -1, emptyList(), "Fetching Token-Token pool boxes...")
+        val tokenToTokenBoxes = fetchAllBoxesForAddress(nodeClient, ADDR_TOKEN_TO_TOKEN) { batch ->
+            onProgress(0, -1, emptyList(), "Token-Token pools: offset $batch")
+        }
+        
+        val allBoxes = ergToTokenBoxes + tokenToTokenBoxes
+        val total = allBoxes.size
+        if (total == 0) return mapOf("total" to 0, "new" to 0)
+
+        val tokenIdSet = mutableSetOf<String>()
+        val parsedEntries = mutableListOf<Triple<String, Map<String, Any>, Boolean>>() // Name, Data, isTokenToToken
+
+        allBoxes.forEachIndexed { index, boxMap ->
+            val assets = (boxMap["assets"] as? List<Map<String, Any>>) ?: emptyList()
+            val registers = boxMap["additionalRegisters"] as? Map<String, Any>
+            val r4 = (registers?.get("R4") as? String) ?: "04ca0f"
+            val decodedFeeNum = decodeVlqZigZag(r4)
+            val fee = (1000 - decodedFeeNum).toDouble() / 1000.0
+            
+            if (index == 0) Log.d("TokenRepo", "Sample box R4: $r4 -> decoded: $decodedFeeNum -> fee: $fee")
+
+            if (assets.size >= 3) {
+                val pid = assets[0]["tokenId"] as String
+                val lp = assets[1]["tokenId"] as String
+                
+                if (assets.size == 3) {
+                    // ERG to Token
+                    val tid = assets[2]["tokenId"] as String
+                    tokenIdSet.add(tid)
+                    val data = mutableMapOf<String, Any>(
+                        "id" to tid,
+                        "pid" to pid,
+                        "lp" to lp,
+                        "fee" to fee,
+                        "R4" to r4
+                    )
+                    parsedEntries.add(Triple("", data, false))
+                } else if (assets.size >= 4) {
+                    // Token to Token
+                    val idIn = assets[2]["tokenId"] as String
+                    val idOut = assets[3]["tokenId"] as String
+                    tokenIdSet.add(idIn)
+                    tokenIdSet.add(idOut)
+                    val data = mutableMapOf<String, Any>(
+                        "id_in" to idIn,
+                        "id_out" to idOut,
+                        "pid" to pid,
+                        "lp" to lp,
+                        "fee" to fee,
+                        "R4" to r4
+                    )
+                    parsedEntries.add(Triple("", data, true))
+                }
+            }
+        }
+
+        // Batch fetch token details
+        val tokenInfoMap = mutableMapOf<String, BlockchainTokenInfo>()
+        val idList = tokenIdSet.toList()
+        idList.chunked(20).forEach { chunk ->
+            try {
+                val infos = nodeClient.api.getTokensInfo(chunk)
+                infos.forEach { info ->
+                    val tid = info["id"] as String
+                    val name = info["name"] as? String ?: tid.take(8)
+                    val decimals = (info["decimals"] as? Number)?.toInt() ?: 0
+                    tokenInfoMap[tid] = BlockchainTokenInfo(tid, name, decimals)
+                }
+            } catch (e: Exception) {}
+        }
+
+        val existingTokens = loadCombinedTokens()
+        // Track names that were already known from assets (tokens.json) so we don't re-report them as "new"
+        val assetKnownNames: Set<String> = try {
+            val type = object : com.google.gson.reflect.TypeToken<Map<String, Map<String, Any>>>() {}.type
+            val inputStream = context.assets.open("tokens.json")
+            val assetMap: Map<String, Map<String, Any>> = gson.fromJson(InputStreamReader(inputStream), type)
+            assetMap.keys.map { key ->
+                if (key.contains("-")) {
+                    val parts = key.split("-", limit = 2)
+                    "${normalizeTokenName(parts[0])}-${normalizeTokenName(parts[1])}"
+                } else {
+                    normalizeTokenName(key)
+                }
+            }.toSet()
+        } catch (e: Exception) { emptySet() }
+
+        val newTokensAdded = mutableListOf<String>()
+        val finalErgToToken = existingTokens.filter { !it.value.containsKey("id_in") }.toMutableMap()
+        val finalTokenToToken = existingTokens.filter { it.value.containsKey("id_in") }.toMutableMap()
+        
+        // Temporary maps to track best liquidity seen so far during this sync
+        val bestErgLiquidity = mutableMapOf<String, Long>()
+        val bestTokenLiquidity = mutableMapOf<String, Long>()
+
+        parsedEntries.forEachIndexed { index, triple ->
+            val boxMap = allBoxes[index]
+            val assets = (boxMap["assets"] as? List<Map<String, Any>>) ?: emptyList()
+            val data = triple.second.toMutableMap()
+            val isT2T = triple.third
+            
+            var entryName = ""
+            if (!isT2T) {
+                val tid = data["id"] as String
+                val pid = data["pid"] as? String ?: ""
+                val info = tokenInfoMap[tid]
+                entryName = normalizeTokenName(info?.name ?: tid.take(8))
+                data["dec"] = info?.decimals ?: 0
+                data["name"] = entryName
+                
+                val currentErg = (boxMap["value"] as? Number)?.toLong() ?: 0L
+                val bestSoFar = bestErgLiquidity[entryName] ?: 0L
+                
+                if (currentErg > bestSoFar) {
+                    bestErgLiquidity[entryName] = currentErg
+                    val isSpecialToken = entryName.equals("USE", ignoreCase = true) || entryName.equals("DexyGold", ignoreCase = true)
+                    
+                    if (!isSpecialToken) {
+                        data["official"] = isSystemVerified(pid)
+                        data["user_added"] = isUserVerified(pid)
+                        data["whitelisted"] = isPidWhitelisted(pid)
+                        // Only mark as "new" if it wasn't in the pre-existing known set
+                        if (!finalErgToToken.containsKey(entryName) && !assetKnownNames.contains(entryName)) {
+                            newTokensAdded.add(entryName)
+                        }
+                        finalErgToToken[entryName] = data
+                    }
+                }
+            } else {
+                val idIn = data["id_in"] as String
+                val idOut = data["id_out"] as String
+                val pid = if (assets.isNotEmpty()) assets[0]["tokenId"] as String else ""
+                val infoIn = tokenInfoMap[idIn]
+                val infoOut = tokenInfoMap[idOut]
+                val nameIn = normalizeTokenName(infoIn?.name ?: idIn.take(8))
+                val nameOut = normalizeTokenName(infoOut?.name ?: idOut.take(8))
+                entryName = "$nameIn-$nameOut"
+                data["dec_in"] = infoIn?.decimals ?: 0
+                data["dec_out"] = infoOut?.decimals ?: 0
+                data["name"] = entryName
+                data["name_in"] = nameIn
+                data["name_out"] = nameOut
+                
+                val currentLiquidity = if (assets.size >= 3) (assets[2]["amount"] as? Number)?.toLong() ?: 0L else 0L
+                val bestSoFar = bestTokenLiquidity[entryName] ?: 0L
+                
+                if (currentLiquidity > bestSoFar) {
+                    bestTokenLiquidity[entryName] = currentLiquidity
+                    data["official"] = isSystemVerified(pid)
+                    data["user_added"] = isUserVerified(pid)
+                    data["whitelisted"] = isPidWhitelisted(pid)
+                    // Only mark as "new" if it wasn't in the pre-existing known set
+                    if (!finalTokenToToken.containsKey(entryName) && !assetKnownNames.contains(entryName)) {
+                        newTokensAdded.add(entryName)
+                    }
+                    finalTokenToToken[entryName] = data
+                }
+            }
+            onProgress(index + 1, total, newTokensAdded.toList(), "Analysing box ${index + 1} of $total")
+        }
+
+        // Save all discovered token info to cache for persistent naming
+        tokenInfoMap.forEach { (tid, info) ->
+            saveTokenInfo(tid, mapOf("name" to (info.name ?: tid.take(8)), "decimals" to info.decimals))
+        }
+
+        // Save files
+        try {
+            ergToTokenFile.writeText(gson.toJson(finalErgToToken))
+            tokenToTokenFile.writeText(gson.toJson(finalTokenToToken))
+            refreshTokens() // Ensure instance is immediately updated
+        } catch (e: Exception) {}
+
+        return mapOf("total" to total, "new" to newTokensAdded.size)
+    }
+
+    companion object {
+        const val ADDR_ERG_TO_TOKEN = "5vSUZRZbdVbnk4sJWjg2uhL94VZWRg4iatK9VgMChufzUgdihgvhR8yWSUEJKszzV7Vmi6K8hCyKTNhUaiP8p5ko6YEU9yfHpjVuXdQ4i5p4cRCzch6ZiqWrNukYjv7Vs5jvBwqg5hcEJ8u1eerr537YLWUoxxi1M4vQxuaCihzPKMt8NDXP4WcbN6mfNxxLZeGBvsHVvVmina5THaECosCWozKJFBnscjhpr3AJsdaL8evXAvPfEjGhVMoTKXAb2ZGGRmR8g1eZshaHmgTg2imSiaoXU5eiF3HvBnDuawaCtt674ikZ3oZdekqswcVPGMwqqUKVsGY4QuFeQoGwRkMqEYTdV2UDMMsfrjrBYQYKUBFMwsQGMNBL1VoY78aotXzdeqJCBVKbQdD3ZZWvukhSe4xrz8tcF3PoxpysDLt89boMqZJtGEHTV9UBTBEac6sDyQP693qT3nKaErN8TCXrJBUmHPqKozAg9bwxTqMYkpmb9iVKLSoJxG7MjAj72SRbcqQfNCVTztSwN3cRxSrVtz4p87jNFbVtFzhPg7UqDwNFTaasySCqM"
+        const val ADDR_TOKEN_TO_TOKEN = "3gb1RZucekcRdda82TSNS4FZSREhGLoi1FxGDmMZdVeLtYYixPRviEdYireoM9RqC6Jf4kx85Y1jmUg5XzGgqdjpkhHm7kJZdgUR3VBwuLZuyHVqdSNv3eanqpknYsXtUwvUA16HFwNa3HgVRAnGC8zj8U7kksrfjycAM1yb19BB4TYR2BKWN7mpvoeoTuAKcAFH26cM46CEYsDRDn832wVNTLAmzz4Q6FqE29H9euwYzKiebgxQbWUxtupvfSbKaHpQcZAo5Dhyc6PFPyGVFZVRGZZ4Kftgi1NMRnGwKG7NTtXsFMsJP6A7yvLy8UZaMPe69BUAkpbSJdcWem3WpPUE7UpXv4itDkS5KVVaFtVyfx8PQxzi2eotP2uXtfairHuKinbpSFTSFKW3GxmXaw7vQs1JuVd8NhNShX6hxSqCP6sxojrqBxA48T2KcxNrmE3uFk7Pt4vPPdMAS4PW6UU82UD9rfhe3SMytK6DkjCocuRwuNqFoy4k25TXbGauTNgKuPKY3CxgkTpw9WfWsmtei178tLefhUEGJueueXSZo7negPYtmcYpoMhCuv4G1JZc283Q7f3mNXS"
+
+        fun normalizeTokenName(name: String): String {
+            return when {
+                name.equals("ERG", ignoreCase = true) -> "ERG"
+                name.equals("USE", ignoreCase = true) -> "USE"
+                name.equals("DexyGold", ignoreCase = true) -> "DexyGold"
+                else -> name
+            }
+        }
+    }
+
+    private var _tokens: Map<String, Map<String, Any>>? = null
+    val tokens: Map<String, Map<String, Any>>
+        get() = synchronized(this) {
+            if (_tokens == null) _tokens = loadCombinedTokens()
+            _tokens!!
+        }
+
+    private fun loadCombinedTokens(): Map<String, Map<String, Any>> {
+        val type = object : TypeToken<Map<String, Map<String, Any>>>() {}.type
+        
+        // 1. Load hardcoded tokens from assets
+        val assetTokens: Map<String, Map<String, Any>> = try {
+            val inputStream = context.assets.open("tokens.json")
+            val map: Map<String, Map<String, Any>> = gson.fromJson(InputStreamReader(inputStream), type) ?: emptyMap()
+            map.mapValues { (k, v) -> 
+                val mut = v.toMutableMap()
+                if (!mut.containsKey("name")) mut["name"] = k
+                mut 
+            }
+        } catch (e: Exception) {
+            Log.e("TokenRepo", "Error loading tokens.json from assets: ${e.message}")
+            emptyMap()
+        }
+
+        // 2. Load synced tokens from files
+        val ergToToken: Map<String, Map<String, Any>> = try {
+            if (ergToTokenFile.exists()) gson.fromJson(ergToTokenFile.readText(), type) else emptyMap()
+        } catch (e: Exception) { emptyMap() }
+
+        val tokenToToken: Map<String, Map<String, Any>> = try {
+            if (tokenToTokenFile.exists()) gson.fromJson(tokenToTokenFile.readText(), type) else emptyMap()
+        } catch (e: Exception) { emptyMap() }
+
+        return ergToToken + tokenToToken + assetTokens
+    }
+
+    private var _cachedTokenInfo: MutableMap<String, Map<String, Any>>? = null
+
+    val cachedTokenInfo: Map<String, Map<String, Any>>
+        get() {
+            if (_cachedTokenInfo == null) {
+                _cachedTokenInfo = loadCache().toMutableMap()
+            }
+            return _cachedTokenInfo!!
+        }
+
+    private fun loadCache(): Map<String, Map<String, Any>> {
+        if (!cacheFile.exists()) return emptyMap()
+        return try {
+            val json = cacheFile.readText()
+            val type = object : TypeToken<Map<String, Map<String, Any>>>() {}.type
+            gson.fromJson(json, type) ?: emptyMap()
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
+    fun saveTokenInfo(tokenId: String, info: Map<String, Any>) {
+        if (_cachedTokenInfo == null) _cachedTokenInfo = loadCache().toMutableMap()
+        _cachedTokenInfo!![tokenId] = info
+        try {
+            cacheFile.writeText(gson.toJson(_cachedTokenInfo))
+        } catch (e: Exception) {}
+    }
+
+    fun getTokenName(tokenId: String): String {
+        val rawName = resolveRawTokenName(tokenId)
+        return normalizeTokenName(rawName)
+    }
+
+    private fun resolveRawTokenName(tokenId: String): String {
+        if (tokenId.equals("ERG", ignoreCase = true)) return "ERG"
+        
+        // 1. Check direct ERG-to-Token matches in current pools
+        for ((name, data) in tokens) {
+            if (data["id"] == tokenId) return name
+        }
+        
+        // 2. Check Token-to-Token pools for component matches
+        for ((name, data) in tokens) {
+            if (name.contains("-")) {
+                if (data["id_in"] == tokenId) return name.split("-")[0]
+                if (data["id_out"] == tokenId) return name.split("-")[1]
+            }
+        }
+        
+        // 3. Fallback to cached metadata
+        val info = cachedTokenInfo[tokenId]
+        return (info?.get("name") as? String) ?: (if (tokenId.length > 8) tokenId.take(8) + ".." else tokenId)
+    }
+
+    private fun normalizeTokenName(name: String): String = Companion.normalizeTokenName(name)
+
+    fun getTokenDecimals(tokenId: String): Int {
+        if (tokenId == "ERG") return 9
+        // Check static tokens.json
+        for ((_, data) in tokens) {
+            if (data["id"] == tokenId) {
+                return (data["dec"] as? Number)?.toInt() ?: 0
+            }
+        }
+        // Check cache
+        val info = cachedTokenInfo[tokenId]
+        return (info?.get("decimals") as? Number)?.toInt() 
+            ?: (info?.get("dec") as? Number)?.toInt() 
+            ?: 0
+    }
+
+    private var _tradeMapper: TradeMapper? = null
+    val tradeMapper: TradeMapper
+        get() = synchronized(this) {
+            if (_tradeMapper == null) _tradeMapper = TradeMapper(tokens)
+            _tradeMapper!!
+        }
+
+    fun refreshTokens() {
+        _tokens = loadCombinedTokens()
+        _tradeMapper = TradeMapper(tokens)
+    }
+
+    private suspend fun fetchAllBoxesForAddress(
+        nodeClient: NodeClient,
+        address: String,
+        onBatch: ((offset: Int) -> Unit)? = null
+    ): List<Map<String, Any>> {
+        val allBoxes = mutableListOf<Map<String, Any>>()
+        var offset = 0
+        val limit = 50
+        val mediaType = "application/json".toMediaTypeOrNull()
+        val jsonAddress = "\"$address\""
+        
+        Log.d("TokenRepo", "Fetching boxes for address (JSON): ${address.take(15)}...")
+        
+        while (true) {
+            try {
+                onBatch?.invoke(offset)
+                Log.d("TokenRepo", "Requesting boxes with offset=$offset, limit=$limit")
+                val boxes = nodeClient.api.getUnspentBoxesByAddressPost(
+                    offset = offset,
+                    limit = limit,
+                    includeUnconfirmed = false,
+                    excludeMempoolSpent = false,
+                    address = jsonAddress.toRequestBody(mediaType)
+                )
+                
+                Log.d("TokenRepo", "Received ${boxes.size} boxes")
+                if (boxes.isEmpty()) break
+                allBoxes.addAll(boxes)
+                if (boxes.size < limit) break
+                offset += limit
+            } catch (e: Exception) {
+                Log.e("TokenRepo", "Error fetching boxes at offset $offset: ${e.message}", e)
+                // Fallback: try raw text if JSON fails
+                if (offset == 0) {
+                    return fetchAllBoxesForAddressRaw(nodeClient, address)
+                }
+                break
+            }
+        }
+        Log.d("TokenRepo", "Finished fetching. Total boxes: ${allBoxes.size}")
+        return allBoxes
+    }
+
+    private suspend fun fetchAllBoxesForAddressRaw(nodeClient: NodeClient, address: String): List<Map<String, Any>> {
+        val allBoxes = mutableListOf<Map<String, Any>>()
+        var offset = 0
+        val limit = 50
+        val mediaType = "text/plain".toMediaTypeOrNull()
+        
+        Log.d("TokenRepo", "Fetching boxes for address (RAW): ${address.take(15)}...")
+        
+        while (true) {
+            try {
+                val boxes = nodeClient.api.getUnspentBoxesByAddressPost(
+                    offset = offset,
+                    limit = limit,
+                    includeUnconfirmed = false,
+                    excludeMempoolSpent = false,
+                    address = address.toRequestBody(mediaType)
+                )
+                if (boxes.isEmpty()) break
+                allBoxes.addAll(boxes)
+                if (boxes.size < limit) break
+                offset += limit
+            } catch (e: Exception) {
+                Log.e("TokenRepo", "Error in RAW fetching: ${e.message}")
+                break
+            }
+        }
+        return allBoxes
+    }
+
+    fun getAllAssets(): List<String> = tradeMapper.allAssets()
+
+    fun getToAssetsFor(fromAsset: String): List<String> = tradeMapper.toAssetsFor(fromAsset)
+
+    fun hasTokenFiles(): Boolean = ergToTokenFile.exists() || tokenToTokenFile.exists()
+
+    fun getErgToTokenJson(): String = if (ergToTokenFile.exists()) ergToTokenFile.readText() else "{}"
+    fun getTokenToTokenJson(): String = if (tokenToTokenFile.exists()) tokenToTokenFile.readText() else "{}"
+    
+    fun isTokenToToken(name: String): Boolean {
+        return tokens[name]?.containsKey("id_in") == true
+    }
+
+    fun deleteTokenData(name: String) {
+        val all = tokens.toMutableMap()
+        all.remove(name)
+        
+        val ergs = all.filter { !it.value.containsKey("id_in") }
+        val t2ts = all.filter { it.value.containsKey("id_in") }
+        
+        try {
+            ergToTokenFile.writeText(gson.toJson(ergs))
+            tokenToTokenFile.writeText(gson.toJson(t2ts))
+            refreshTokens()
+        } catch (e: Exception) {}
+    }
+
+    fun updateTokenData(key: String, data: Map<String, Any>) {
+        val all = tokens.toMutableMap()
+        all[key] = data
+        
+        val ergs = all.filter { !it.value.containsKey("id_in") } // Changed from !it.key.contains("-")
+        val t2ts = all.filter { it.value.containsKey("id_in") } // Changed from it.key.contains("-")
+        
+        ergToTokenFile.writeText(gson.toJson(ergs))
+        tokenToTokenFile.writeText(gson.toJson(t2ts))
+        
+        // Clear caches so the updated data is reused immediately
+        refreshTokens()
+        
+        // Update custom whitelist if pid is in data
+        (data["pid"] as? String)?.let { pid ->
+            val isUser = data["user_added"] as? Boolean ?: false
+            if (isUser) customWhitelistPids.add(pid) else customWhitelistPids.remove(pid)
+            saveCustomWhitelist(customWhitelistPids)
+        }
+    }
+}

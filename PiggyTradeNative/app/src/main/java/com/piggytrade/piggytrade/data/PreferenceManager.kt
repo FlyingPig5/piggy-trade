@@ -1,0 +1,78 @@
+package com.piggytrade.piggytrade.data
+
+import android.content.Context
+import android.content.SharedPreferences
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+
+class PreferenceManager(context: Context) {
+    private val prefs: SharedPreferences = context.getSharedPreferences("piggy_prefs", Context.MODE_PRIVATE)
+    private val gson = Gson()
+
+    companion object {
+        private const val KEY_WALLETS = "wallets"
+        private const val KEY_NODES = "nodes"
+        private const val KEY_FAVORITES = "favorites"
+        private const val KEY_SETTINGS = "settings"
+        private const val KEY_SELECTED_NODE = "selected_node"
+        private const val KEY_SELECTED_WALLET = "selected_wallet"
+    }
+
+    fun saveWallets(wallets: Map<String, Any>) {
+        prefs.edit().putString(KEY_WALLETS, gson.toJson(wallets)).apply()
+    }
+
+    fun loadWallets(): Map<String, Any> {
+        val json = prefs.getString(KEY_WALLETS, null) ?: return emptyMap()
+        val type = object : TypeToken<Map<String, Any>>() {}.type
+        return gson.fromJson(json, type)
+    }
+
+    fun saveNodes(nodes: Map<String, Any>) {
+        prefs.edit().putString(KEY_NODES, gson.toJson(nodes)).apply()
+    }
+
+    fun loadNodes(): Map<String, Any> {
+        val json = prefs.getString(KEY_NODES, null) ?: return emptyMap()
+        val type = object : TypeToken<Map<String, Any>>() {}.type
+        return gson.fromJson(json, type)
+    }
+
+    fun saveFavorites(favorites: List<String>) {
+        prefs.edit().putString(KEY_FAVORITES, gson.toJson(favorites)).apply()
+    }
+
+    fun loadFavorites(default: List<String>): List<String> {
+        val json = prefs.getString(KEY_FAVORITES, null) ?: return default
+        val type = object : TypeToken<List<String>>() {}.type
+        return gson.fromJson(json, type)
+    }
+
+    fun saveSettings(settings: Map<String, Any>) {
+        prefs.edit().putString(KEY_SETTINGS, gson.toJson(settings)).apply()
+    }
+
+    fun loadSettings(): Map<String, Any> {
+        val json = prefs.getString(KEY_SETTINGS, null) ?: return emptyMap()
+        val type = object : TypeToken<Map<String, Any>>() {}.type
+        return gson.fromJson(json, type)
+    }
+
+    var selectedNode: String
+        get() = prefs.getString(KEY_SELECTED_NODE, "Select Node") ?: "Select Node"
+        set(value) = prefs.edit().putString(KEY_SELECTED_NODE, value).apply()
+
+    var selectedWallet: String
+        get() = prefs.getString(KEY_SELECTED_WALLET, "Select Wallet") ?: "Select Wallet"
+        set(value) = prefs.edit().putString(KEY_SELECTED_WALLET, value).apply()
+
+    fun saveTrades(trades: List<Map<String, Any>>) {
+        prefs.edit().putString("trades", gson.toJson(trades)).apply()
+    }
+
+    fun loadTrades(): List<Map<String, Any>> {
+        val json = prefs.getString("trades", null) ?: return emptyList()
+        val type = object : TypeToken<List<Map<String, Any>>>() {}.type
+        return gson.fromJson(json, type)
+    }
+}
