@@ -348,7 +348,9 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setMinerFee(fee: Double) {
-        _uiState.value = _uiState.value.copy(minerFee = fee)
+        // Round to 9 decimal places (nanoErg precision) to eliminate floating point noise
+        val roundedFee = java.math.BigDecimal(fee).setScale(9, java.math.RoundingMode.HALF_UP).toDouble()
+        _uiState.value = _uiState.value.copy(minerFee = roundedFee)
     }
 
     fun setSelectedAddress(addr: String) {
@@ -813,19 +815,22 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 if (addr.isEmpty()) throw Exception("No wallet selected")
 
                 val client = nodeClient ?: throw Exception("Node client not initialized")
-                val txBuilder = com.piggytrade.piggytrade.blockchain.TxBuilder(client, addr)
-                val traderLocal = Trader(client, txBuilder, tokenRepository.tokens, null)
+            val currentHeight = try { client.getHeight() } catch (e: Exception) { 0 }
+            
+            val txBuilder = com.piggytrade.piggytrade.blockchain.TxBuilder(client, addr)
+            val traderLocal = Trader(client, txBuilder, tokenRepository.tokens, null)
 
-                Log.d(TAG, "Building transaction...")
-                val txDict = traderLocal.buildSwapTransaction(
-                    tokenName = route.tokenKey,
-                    amount = amount,
-                    orderType = route.orderType,
-                    poolType = route.poolType,
-                    senderAddress = addr,
-                    fee = current.minerFee,
-                    includeUnconfirmed = current.includeUnconfirmed
-                )
+            Log.d(TAG, "Building transaction at height $currentHeight...")
+            val txDict = traderLocal.buildSwapTransaction(
+                tokenName = route.tokenKey,
+                amount = amount,
+                orderType = route.orderType,
+                poolType = route.poolType,
+                senderAddress = addr,
+                currentHeight = currentHeight,
+                fee = current.minerFee,
+                includeUnconfirmed = current.includeUnconfirmed
+            )
                 Log.i(TAG, "Successfully built transaction.")
 
                 val serviceFee = (txDict["p_shift"] as? Number)?.toDouble()?.div(1_000_000_000.0) ?: 0.0

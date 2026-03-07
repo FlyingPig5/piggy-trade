@@ -26,7 +26,8 @@ fun <T> SelectorScreen(
     getBalance: ((T) -> String?)? = null,
     getVerificationStatus: ((T) -> Int)? = null,
     showFullId: Boolean = false,
-    showSearch: Boolean = true
+    showSearch: Boolean = true,
+    idLabel: String? = null
 ) {
     var searchQuery by remember { mutableStateOf("") }
     val filteredItems = items.filter { 
@@ -136,7 +137,7 @@ fun <T> SelectorScreen(
                                 }
                             }
                             if (getId(item).isNotEmpty()) {
-                                if (showFullId) {
+                                 if (showFullId) {
                                     Text(
                                         text = getId(item),
                                         color = ColorTextDim,
@@ -144,12 +145,16 @@ fun <T> SelectorScreen(
                                         maxLines = 1
                                     )
                                 } else {
-                                    val isAddress = getId(item).length > 30
-                                    val label = if (isAddress) "Addr: " else "ID: "
+                                    val id = getId(item)
+                                    val isAddress = id.length > 30
+                                    
+                                    // Use explicit label if provided, otherwise infer
+                                    val label = idLabel ?: if (isAddress) "Addr: " else "ID: "
+                                    
                                     val displayId = if (isAddress) {
-                                        getId(item).take(12) + "..." + getId(item).takeLast(6)
+                                        id.take(12) + "..." + id.takeLast(6)
                                     } else {
-                                        getId(item).take(10)
+                                        id.take(10)
                                     }
                                     Text(
                                         text = "$label$displayId",

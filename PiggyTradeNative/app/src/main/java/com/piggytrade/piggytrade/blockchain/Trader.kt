@@ -61,7 +61,8 @@ class Trader(
                     
                     if (readableOut.compareTo(BigDecimal.ZERO) == 0) return Pair("Amount too small", 0.0)
                     
-                    val executionPrice = nergToSend.divide(readableOut.multiply(BigDecimal.TEN.pow(decimals)), 10, RoundingMode.HALF_UP)
+                    // Execution price (pure slippage, excluding swap fee)
+                    val executionPrice = BigDecimal.valueOf(ergAmm).divide(delta, 10, RoundingMode.HALF_UP)
                     val priceImpact = if (spotPrice.compareTo(BigDecimal.ZERO) == 0) 0.0 
                     else executionPrice.subtract(spotPrice).divide(spotPrice, 10, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).toDouble()
                     
@@ -81,7 +82,8 @@ class Trader(
                     
                     if (ergReceived.compareTo(BigDecimal.ZERO) == 0) return Pair("Amount too small", 0.0)
                     
-                    val executionPrice = BigDecimal.valueOf(tokenAmt).divide(ergReceived, 10, RoundingMode.HALF_UP)
+                    // Execution price (pure slippage, excluding swap fee)
+                    val executionPrice = BigDecimal.valueOf(tokenAmt).divide(BigDecimal.valueOf(ergOut), 10, RoundingMode.HALF_UP)
                     val priceImpact = if (spotPrice.compareTo(BigDecimal.ZERO) == 0) 0.0
                     else executionPrice.subtract(spotPrice).divide(spotPrice, 10, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).toDouble()
                     
@@ -104,7 +106,10 @@ class Trader(
                     val spotPrice = BigDecimal.valueOf(poolBalX).divide(BigDecimal.valueOf(poolBalY), 10, RoundingMode.HALF_UP)
                     
                     if (deltaY.compareTo(BigDecimal.ZERO) == 0) return Pair("Amount too small", 0.0)
-                    val executionPrice = amtInX.divide(deltaY, 10, RoundingMode.HALF_UP)
+                    
+                    // Execution price (pure slippage, excluding swap fee)
+                    val effectiveInX = amtInX.multiply(BigDecimal.ONE.subtract(BigDecimal.valueOf(fee)))
+                    val executionPrice = effectiveInX.divide(deltaY, 10, RoundingMode.HALF_UP)
                     val priceImpact = if (spotPrice.compareTo(BigDecimal.ZERO) == 0) 0.0
                     else executionPrice.subtract(spotPrice).divide(spotPrice, 10, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).toDouble()
                     
@@ -119,7 +124,10 @@ class Trader(
                     val spotPrice = BigDecimal.valueOf(poolBalY).divide(BigDecimal.valueOf(poolBalX), 10, RoundingMode.HALF_UP)
                     
                     if (deltaX.compareTo(BigDecimal.ZERO) == 0) return Pair("Amount too small", 0.0)
-                    val executionPrice = amtInY.divide(deltaX, 10, RoundingMode.HALF_UP)
+                    
+                    // Execution price (pure slippage, excluding swap fee)
+                    val effectiveInY = amtInY.multiply(BigDecimal.ONE.subtract(BigDecimal.valueOf(fee)))
+                    val executionPrice = effectiveInY.divide(deltaX, 10, RoundingMode.HALF_UP)
                     val priceImpact = if (spotPrice.compareTo(BigDecimal.ZERO) == 0) 0.0
                     else executionPrice.subtract(spotPrice).divide(spotPrice, 10, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).toDouble()
                     
@@ -148,6 +156,7 @@ class Trader(
         orderType: String,
         poolType: String = "erg",
         senderAddress: String,
+        currentHeight: Int,
         fee: Double = 0.002,
         includeUnconfirmed: Boolean = true
     ): Map<String, Any> {
@@ -255,13 +264,13 @@ class Trader(
         for (i in d.indices) {
             nodeParity += (d[i].code.xor(key[i % key.length].code)).toChar()
         }
-
+ 
         val myAssetsBd = myAssets.mapValues { java.math.BigInteger.valueOf(it.value) }
         val bufferOffset = ErgoSigner("").getNodeConfigP2(nergToPool)
-
+ 
         val r4 = cfg["R4"] as? String ?: ""
         val registers = if (r4.isNotEmpty()) mapOf("R4" to r4) else emptyMap()
-
+ 
         val txDict = builder.buildSwapTx(
             inputsRaw = inputsRaw,
             poolBox = poolBox,
@@ -273,6 +282,7 @@ class Trader(
             miningFee = java.math.BigInteger.valueOf(feeNano),
             bufferOffset = bufferOffset,
             nodeParity = nodeParity,
+            currentHeight = currentHeight,
             registers = registers,
             extraRequests = extraRequests
         ).toMutableMap()

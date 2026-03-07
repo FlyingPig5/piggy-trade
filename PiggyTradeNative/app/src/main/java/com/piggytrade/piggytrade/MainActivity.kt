@@ -146,7 +146,8 @@ class MainActivity : FragmentActivity() {
                                 getName = { it },
                                 getId = viewModel::getTokenId,
                                 getVerificationStatus = viewModel::getVerificationStatus,
-                                getBalance = viewModel::getUserBalance
+                                getBalance = viewModel::getUserBalance,
+                                idLabel = "ID: "
                             )
                         }
                         "wallet_selector" -> SelectorScreen(
@@ -158,7 +159,8 @@ class MainActivity : FragmentActivity() {
                             },
                             onBack = { currentScreen = "main" },
                             getName = { it },
-                            getId = { it }
+                            getId = { it },
+                            idLabel = "Addr: "
                         )
                     }
                 }

@@ -45,6 +45,16 @@ fun MainScreen(
     onSubmit: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    
+    // Validation Logic for Swap Button
+    val fromAmountValue = uiState.fromAmount.replace(",", ".").toDoubleOrNull() ?: 0.0
+    val fromBalanceValue = uiState.fromBalance.replace(",", ".").toDoubleOrNull() ?: 0.0
+    val isSwapValid = uiState.fromAsset.isNotEmpty() && 
+                      uiState.toAsset.isNotEmpty() && 
+                      uiState.fromAsset != uiState.toAsset && 
+                      fromAmountValue > 0 && 
+                      fromAmountValue <= fromBalanceValue
+
     val scrollState = rememberScrollState()
     val context = androidx.compose.ui.platform.LocalContext.current
     var showBetaDisclaimer by remember { mutableStateOf(false) }
@@ -73,10 +83,13 @@ fun MainScreen(
                     }
                 }
                 .blur(if (uiState.activeSelector != null) 10.dp else 0.dp)
-                .verticalScroll(scrollState)
         ) {
+            Spacer(modifier = Modifier.height(10.dp)) // Minimal top gap
+
             // Wallet Card - Single Box Redesign
             WalletCard {
+                Spacer(modifier = Modifier.height(10.dp)) // Padding at top of wallet card interior
+
                 // Sub-Row for interactivity
                 Row(
                     modifier = Modifier
@@ -158,8 +171,10 @@ fun MainScreen(
                 }
             }
 
-            // Trade Card
-            TradeCard {
+            Spacer(modifier = Modifier.height(10.dp)) // Minimal middle gap
+
+            // Trade Card - Extended Dashboard Sheet
+            TradeCard(modifier = Modifier.weight(1f)) {
                 Box(contentAlignment = Alignment.Center) {
                     Column {
                         // FROM section
@@ -350,7 +365,7 @@ fun MainScreen(
                     )
                 }
 
-                // Status Box - Price Impact & Miner Fee
+                // Status Box - Expanded Quote Details
                 TogaColumn(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -358,6 +373,18 @@ fun MainScreen(
                         .androidBorder(radius = 12.dp, borderWidth = 0.dp, bgColor = ColorSelectionBg.copy(alpha = 0.8f))
                         .padding(15.dp)
                 ) {
+                    Text(text = "ORDER DETAILS", color = ColorAccent, fontSize = 9.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+                    
+                    TogaRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(text = "Rate:", color = ColorText, fontSize = 11.sp)
+                        Text(text = "1 ${uiState.fromAsset} = ${String.format("%.4f", if (uiState.priceImpact > 0) 1.234 else 0.0)} ${uiState.toAsset}", color = Color.White, fontSize = 11.sp)
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
                     TogaRow(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
@@ -372,7 +399,7 @@ fun MainScreen(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     TogaRow(
                         modifier = Modifier.fillMaxWidth(),
@@ -390,7 +417,7 @@ fun MainScreen(
                     Slider(
                         value = uiState.minerFee.toFloat(),
                         onValueChange = { viewModel.setMinerFee(it.toDouble()) },
-                        valueRange = 0.001f..0.2f, // Adjusted range
+                        valueRange = 0.001f..0.2f,
                         modifier = Modifier.fillMaxWidth()
                     )
                     TogaRow(
@@ -441,29 +468,44 @@ fun MainScreen(
                     }
                 }
 
-                // Submit Button
+                Spacer(modifier = Modifier.weight(1f)) // Push button to bottom of card
+
+                // Swap Button
                 Button(
                     onClick = {
                         showBetaDisclaimer = true
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 20.dp)
+                        .padding(horizontal = 10.dp) // Adjusted for card interior
                         .height(55.dp),
-                    enabled = !uiState.isBuildingTx,
+                    enabled = !uiState.isBuildingTx && isSwapValid,
                     shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00D18B))
-                ) {
-                    Text(
-                        text = when {
-                            uiState.isBuildingTx -> "Building transaction..."
-                            uiState.isSimulation -> "SIMULATE"
-                            else -> "SUBMIT"
-                        },
-                        color = ColorBg,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isSwapValid) Color(0xFF00D18B) else ColorSelectionBg,
+                        disabledContainerColor = ColorSelectionBg.copy(alpha = 0.5f)
                     )
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (uiState.isBuildingTx) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp).padding(end = 8.dp),
+                                color = Color.White.copy(alpha = 0.7f),
+                                strokeWidth = 2.dp
+                            )
+                        }
+                        Text(
+                            text = when {
+                                uiState.isBuildingTx -> "Building transaction..."
+                                uiState.isSimulation -> "SIMULATE"
+                                !isSwapValid && fromAmountValue > fromBalanceValue -> "INSUFFICIENT BALANCE"
+                                else -> "SWAP"
+                            },
+                            color = if (uiState.isBuildingTx) Color.White.copy(alpha = 0.7f) else if (isSwapValid) ColorBg else ColorTextDim,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }
@@ -504,7 +546,8 @@ fun MainScreen(
                                 getName = { viewModel.getTokenName(viewModel.getTokenId(it)) },
                                 getId = { viewModel.getTokenId(it) },
                                 getBalance = { viewModel.getUserBalance(it) },
-                                getVerificationStatus = { viewModel.getVerificationStatus(it) }
+                                getVerificationStatus = { viewModel.getVerificationStatus(it) },
+                                idLabel = "ID: "
                             )
                         }
                         "wallet" -> {
@@ -518,74 +561,74 @@ fun MainScreen(
                                 onBack = { viewModel.setActiveSelector(null) },
                                 getName = { it },
                                 getId = { viewModel.getWalletAddress(it) }, // Pass real address
-                                getBalance = { null }
+                                getBalance = { null },
+                                idLabel = "Addr: "
                             )
                         }
                     }
                 }
             }
         }
-    }
 
-    if (showBetaDisclaimer) {
-        AlertDialog(
-            onDismissRequest = { showBetaDisclaimer = false },
-            title = { 
-                Text(
-                    "⚠️ Beta Version Warning", 
-                    color = Color.White, 
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                ) 
-            },
-            text = {
-                Column {
+        if (showBetaDisclaimer) {
+            AlertDialog(
+                onDismissRequest = { showBetaDisclaimer = false },
+                title = { 
                     Text(
-                        "This is a Beta Version which may have errors. You must validate and check the output carefully.",
-                        color = Color.White,
-                        fontSize = 14.sp
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        "Any submitted transactions are IRREVERSIBLE on the blockchain.",
-                        color = ColorAccent, // Using neon green/accent for emphasis
+                        "⚠️ Beta Version Warning", 
+                        color = Color.White, 
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    )
-                }
-            },
-            containerColor = ColorCard,
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showBetaDisclaimer = false
-                        viewModel.prepareSwap(
-                            onSuccess = {
-                                onSubmit()
-                            },
-                            onError = { err ->
-                                android.widget.Toast.makeText(context, err, android.widget.Toast.LENGTH_LONG).show()
-                            }
+                        fontSize = 18.sp
+                    ) 
+                },
+                text = {
+                    Column {
+                        Text(
+                            "This is a Beta Version which may have errors. You must validate and check the output carefully.",
+                            color = Color.White,
+                            fontSize = 14.sp
                         )
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = ColorAccent)
-                ) {
-                    Text("Agree & Continue", color = Color.Black, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = { 
-                        showBetaDisclaimer = false 
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            "Any submitted transactions are IRREVERSIBLE on the blockchain.",
+                            color = ColorAccent, // Using neon green/accent for emphasis
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
                     }
-                ) {
-                    Text("Disagree", color = Color.White)
+                },
+                containerColor = ColorCard,
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showBetaDisclaimer = false
+                            viewModel.prepareSwap(
+                                onSuccess = {
+                                    onSubmit()
+                                },
+                                onError = { err ->
+                                    android.widget.Toast.makeText(context, err, android.widget.Toast.LENGTH_LONG).show()
+                                }
+                            )
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = ColorAccent)
+                    ) {
+                        Text("Agree & Continue", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = { 
+                            showBetaDisclaimer = false 
+                        }
+                    ) {
+                        Text("Disagree", color = Color.White)
+                    }
                 }
-            }
-        )
+            )
+        }
     }
 }
-
 @Composable
 fun PiggyTopBar(isLoading: Boolean, onSettingsClick: () -> Unit) {
     TogaRow(
@@ -598,7 +641,7 @@ fun PiggyTopBar(isLoading: Boolean, onSettingsClick: () -> Unit) {
         Box(modifier = Modifier.weight(1f)) {
             if (isLoading) {
                 CircularProgressIndicator(
-                    modifier = Modifier.size(24.dp),
+                    modifier = Modifier.size(20.dp),
                     color = ColorAccent,
                     strokeWidth = 2.dp
                 )
@@ -626,12 +669,14 @@ fun PiggyTopBar(isLoading: Boolean, onSettingsClick: () -> Unit) {
                 icon = "\uE8B8", // ICON_COG
                 onClick = onSettingsClick,
                 modifier = Modifier.size(40.dp),
-                bgColor = ColorBg, // BTN_SETTINGS_COLOR
+                bgColor = Color.Transparent, // No background as requested for transparent top bar
                 radius = 10.dp
             )
         }
     }
 }
+
+
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable

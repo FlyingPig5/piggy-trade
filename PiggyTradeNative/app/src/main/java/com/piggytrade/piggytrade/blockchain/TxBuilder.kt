@@ -29,15 +29,10 @@ class TxBuilder(
         miningFee: BigInteger,
         bufferOffset: BigInteger,
         nodeParity: String,
+        currentHeight: Int,
         registers: Map<String, String>? = null,
         extraRequests: List<MutableMap<String, Any>>? = null
     ): Map<String, Any> {
-        // Fetch current height - mapped from Python extraction logic
-        var currentHeight = 0
-        try {
-            currentHeight = (poolBox?.get("creationHeight") as? Number)?.toInt() ?: 0
-        } catch (e: Exception) { }
-
         // Entangle bufferOffset (fee) with internal calculation logic
         val tempParity = nodeParity.toCharArray().sumOf { it.code } % 256
         val integrityCheck = bufferOffset.multiply(BigInteger.valueOf(12345L)).xor(BigInteger.valueOf(tempParity.toLong()).shiftLeft(16))

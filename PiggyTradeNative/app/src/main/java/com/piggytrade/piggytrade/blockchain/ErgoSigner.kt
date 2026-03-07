@@ -197,14 +197,37 @@ class ErgoSigner(private val nodeUrl: String) {
                 currentHeight,
                 lastHeadersJson
             )
-            "ergopay:$base64Reduced"
+            toErgoPayUrl(base64Reduced)
         } catch (e: Exception) {
             android.util.Log.e("ErgoSigner", "buildReducedTxBytes failed: ${e.message}")
-            // Fallback: Base64-encode unsigned JSON (some wallets accept this format)
+            // Fallback: Base64-encode unsigned JSON
             val unsignedJson = toUnsignedJson(txDict, senderAddress)
-            val base64Str = Base64.encodeToString(unsignedJson.toByteArray(), Base64.URL_SAFE or Base64.NO_WRAP)
-            "ergopay:$base64Str"
+            val base64Str = Base64.encodeToString(unsignedJson.toByteArray(), Base64.NO_WRAP)
+            toErgoPayUrl(base64Str)
         }
+    }
+
+    /**
+     * Helper to ensure Base64 is correctly padded and follows EIP-20 (URL-Safe).
+     * 1. Uses 'ergopay:<payload>' (opaque URI) to avoid "Invalid URL host" issues.
+     * 2. Uses URL-Safe alphabet ('-' and '_') to prevent corruption by Intents.
+     * 3. Ensures correct padding for strict decoders.
+     */
+    private fun toErgoPayUrl(base64: String): String {
+        // 1. Convert to URL-Safe alphabet (mandated by EIP-20)
+        // We also strip existing padding to re-calculate it cleanly.
+        val safePayload = base64.trim()
+            .replace("+", "-")
+            .replace("/", "_")
+            .replace("=", "")
+            
+        // 2. Strict padding to satisfy decoders that check "multiple of 4" length.
+        var finalPayload = safePayload
+        while (finalPayload.length % 4 != 0) {
+            finalPayload += "="
+        }
+            
+        return "ergopay:$finalPayload"
     }
 
     fun signTransaction(
@@ -245,8 +268,8 @@ class ErgoSigner(private val nodeUrl: String) {
     fun reduceTxForErgopayLegacy(txDict: Map<String, Any>, senderAddress: String): String {
         val unsignedTxStr = toUnsignedJson(txDict, senderAddress)
         val unsignedBytes = unsignedTxStr.toByteArray()
-        val base64Str = Base64.encodeToString(unsignedBytes, Base64.URL_SAFE or Base64.NO_WRAP)
-        return "ergopay:$base64Str"
+        val base64Str = Base64.encodeToString(unsignedBytes, Base64.NO_WRAP)
+        return toErgoPayUrl(base64Str)
     }
 
     fun toUnsignedJson(txDict: Map<String, Any>, senderAddress: String): String {

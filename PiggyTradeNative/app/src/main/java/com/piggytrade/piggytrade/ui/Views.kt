@@ -179,9 +179,12 @@ fun TogaRow(
  * margin=10, margin_top=2, padding_top=20, radius=15, v_padding=15
  */
 @Composable
-fun TradeCard(content: @Composable ColumnScope.() -> Unit) {
+fun TradeCard(
+    modifier: Modifier = Modifier,
+    content: @Composable ColumnScope.() -> Unit
+) {
     TogaColumn(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .padding(start = 10.dp, end = 10.dp, top = 2.dp, bottom = 10.dp) // margin=10, margin_top=2
             .androidBorder(radius = 15.dp, borderWidth = 0.dp, bgColor = ColorCard)

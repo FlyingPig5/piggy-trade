@@ -104,8 +104,17 @@ fun ReviewTxScreen(
                 )
 
                 Text("WHAT YOU PAY:", color = ColorTextDim, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                val payAmtValue = params.payAmount.replace(",", ".").toDoubleOrNull() ?: 0.0
+                val totalFee = params.minerFee + params.serviceFee
+                
+                val displayText = if (params.payToken == "ERG") {
+                    "${String.format("%.4f", payAmtValue + totalFee)} ERG"
+                } else {
+                    "${params.payAmount} ${params.payToken} + ${String.format("%.4f", totalFee)} ERG"
+                }
+
                 Text(
-                    text = "${params.payAmount} ${params.payToken} + ${String.format("%.4f", params.minerFee + params.serviceFee)} ERG",
+                    text = displayText,
                     color = Color.White,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
@@ -113,7 +122,7 @@ fun ReviewTxScreen(
                 )
 
                 Text(
-                    text = "Miner Fee: ${params.minerFee} + App Fee: ${String.format("%.4f", params.serviceFee)} ERG",
+                    text = "Miner Fee: ${String.format("%.4f", params.minerFee)} + App Fee: ${String.format("%.4f", params.serviceFee)} ERG",
                     color = ColorTextDim,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(bottom = 20.dp)
