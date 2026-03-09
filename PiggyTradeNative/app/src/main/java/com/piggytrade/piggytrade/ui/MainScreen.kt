@@ -33,6 +33,10 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 
 @Composable
 fun MainScreen(
@@ -68,6 +72,12 @@ fun MainScreen(
             PiggyTopBar(
                 isLoading = uiState.isLoadingQuote,
                 onSettingsClick = onNavigateToSettings
+            )
+        },
+        bottomBar = {
+            BottomMenuBar(
+                activeTab = uiState.activeTab,
+                onTabClick = { viewModel.setActiveTab(it) }
             )
         },
         containerColor = ColorBg
@@ -173,16 +183,34 @@ fun MainScreen(
 
             Spacer(modifier = Modifier.height(10.dp)) // Minimal middle gap
 
-            // Trade Card - Extended Dashboard Sheet
-            TradeCard(modifier = Modifier.weight(1f)) {
-                Box(contentAlignment = Alignment.Center) {
-                    Column {
-                        // FROM section
-                        TogaColumn(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 20.dp)
-                        ) {
+            // Tab Content
+            AnimatedContent(
+                targetState = uiState.activeTab,
+                transitionSpec = {
+                    if (targetState == "wallet") {
+                        // DEX -> Wallet: DEX slides out to left, Wallet slides in from right
+                        slideInHorizontally(animationSpec = tween(400)) { it } togetherWith 
+                        slideOutHorizontally(animationSpec = tween(400)) { -it }
+                    } else {
+                        // Wallet -> DEX: Wallet slides out to right, DEX slides in from left
+                        slideInHorizontally(animationSpec = tween(400)) { -it } togetherWith 
+                        slideOutHorizontally(animationSpec = tween(400)) { it }
+                    }
+                },
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                label = "TabTransition"
+            ) { tab ->
+                if (tab == "dex") {
+                    TradeCard(modifier = Modifier.fillMaxSize()) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Column {
+                                // FROM section
+                                TogaColumn(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 20.dp)
+                                ) {
+
                             // Favorites: Single Line Scrollable (Moved and Resized)
                             LazyRow(
                                 modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
@@ -508,7 +536,18 @@ fun MainScreen(
                     }
                 }
             }
+        } else {
+            Box(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp)) {
+                WalletInfoContent(
+                    walletName = uiState.selectedWallet,
+                    viewModel = viewModel,
+                    onDeleteComplete = null,
+                    showTitle = true
+                )
+            }
         }
+    }
+
 
         // Animated Popup Selector
         androidx.compose.animation.AnimatedVisibility(
@@ -535,9 +574,14 @@ fun MainScreen(
                 ) {
                     when (uiState.activeSelector) {
                         "from", "to", "fav" -> {
+                            val items = if (uiState.activeSelector == "to") {
+                                viewModel.getReachableTokens()
+                            } else {
+                                uiState.tokens
+                            }
                             SelectorScreen(
                                 title = "Select Token",
-                                items = uiState.tokens,
+                                items = items,
                                 onSelect = { token ->
                                     viewModel.finalizeSelection(token)
                                     viewModel.setActiveSelector(null)
@@ -629,6 +673,8 @@ fun MainScreen(
         }
     }
 }
+}
+
 @Composable
 fun PiggyTopBar(isLoading: Boolean, onSettingsClick: () -> Unit) {
     TogaRow(
@@ -712,6 +758,70 @@ fun FavoriteButton(index: Int, fav: String, isSelected: Boolean, onClick: () -> 
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun BottomMenuBar(
+    activeTab: String,
+    onTabClick: (String) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(70.dp)
+            .background(ColorCard)
+            .padding(horizontal = 40.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // DEX Tab
+        Column(
+            modifier = Modifier
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = { onTabClick("dex") }
+                ),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "\uE8D5", // swap_vert
+                fontFamily = MaterialDesignIcons,
+                fontSize = 24.sp,
+                color = if (activeTab == "dex") ColorAccent else ColorTextDim
+            )
+            Text(
+                text = "DEX",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (activeTab == "dex") ColorAccent else ColorTextDim
+            )
+        }
+
+        // Wallet Tab
+        Column(
+            modifier = Modifier
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = { onTabClick("wallet") }
+                ),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "\uF8FF", // wallet
+                fontFamily = MaterialDesignIcons,
+                fontSize = 24.sp,
+                color = if (activeTab == "wallet") ColorAccent else ColorTextDim
+            )
+            Text(
+                text = "Wallet",
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (activeTab == "wallet") ColorAccent else ColorTextDim
+            )
         }
     }
 }

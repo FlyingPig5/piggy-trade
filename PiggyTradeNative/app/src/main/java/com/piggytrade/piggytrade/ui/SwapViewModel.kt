@@ -65,7 +65,8 @@ data class SwapState(
     val numFavorites: Int = 8,
     val activeSelector: String? = null, // "from", "to", "fav", "wallet"
     val nodeUrl: String = "",
-    val isToAssetFavorite: Boolean = false
+    val isToAssetFavorite: Boolean = false,
+    val activeTab: String = "dex" // "dex", "wallet"
 )
 
 data class PoolMapping(
@@ -606,6 +607,10 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setActiveTab(tab: String) {
+        _uiState.value = _uiState.value.copy(activeTab = tab)
+    }
+
     fun getWalletData(name: String): Map<String, Any>? {
         val rawName = name.replace(" (Ergopay)", "").trim()
         val wallets = preferenceManager.loadWallets()
@@ -730,6 +735,15 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 firstFavoriteSelectedIndex = null
             )
         }
+    }
+
+    fun getReachableTokens(): List<String> {
+        val from = _uiState.value.fromAsset
+        if (from.isEmpty()) return _uiState.value.tokens
+        
+        val reachable = tokenRepository.getToAssetsFor(from)
+        // Maintain the same relative sorting as uiState.tokens (which is: ERG, then by balance, then alphabetically)
+        return _uiState.value.tokens.filter { it in reachable }
     }
 
     fun getTokenName(tokenId: String) = tokenRepository.getTokenName(tokenId)

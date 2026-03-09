@@ -23,51 +23,6 @@ fun WalletInfoScreen(
     viewModel: SwapViewModel,
     onBack: () -> Unit
 ) {
-    val uiState by viewModel.uiState.collectAsState()
-    var showDeleteConfirm1 by remember { mutableStateOf(false) }
-    var showDeleteConfirm2 by remember { mutableStateOf(false) }
-    
-    LaunchedEffect(Unit) {
-        viewModel.fetchWalletBalances()
-    }
-    
-    val sortedTokens = remember(uiState.walletTokens) {
-        uiState.walletTokens.toList().sortedWith { a, b ->
-            val tokenIdA = a.first
-            val tokenIdB = b.first
-            val nameA = viewModel.getTokenName(tokenIdA)
-            val nameB = viewModel.getTokenName(tokenIdB)
-            
-            // Priority 1: SigUSD/USE
-            fun getAssetPriority(name: String, id: String): Int {
-                if (name.uppercase() == "SIGUSD") return 0
-                if (name.uppercase() == "USE") return 1
-                if (name.uppercase() == "DEXYGOLD") return 2
-                
-                // Priority 2: Whitelisted/Named tokens
-                val isNamed = !name.startsWith(id.take(5))
-                if (isNamed) return 10
-                
-                // Priority 3: Unknown tokens
-                return 100
-            }
-            
-            val prioA = getAssetPriority(nameA, tokenIdA)
-            val prioB = getAssetPriority(nameB, tokenIdB)
-            
-            if (prioA != prioB) return@sortedWith prioA.compareTo(prioB)
-            
-            // Priority 4: Has Logo
-            val hasLogoA = viewModel.hasLogo(tokenIdA)
-            val hasLogoB = viewModel.hasLogo(tokenIdB)
-            
-            if (hasLogoA != hasLogoB) return@sortedWith if (hasLogoA) -1 else 1
-            
-            // Fallback: Name
-            nameA.compareTo(nameB)
-        }
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -95,16 +50,87 @@ fun WalletInfoScreen(
                 modifier = Modifier.padding(start = 10.dp)
             )
             Spacer(modifier = Modifier.weight(1f))
+        }
+
+        WalletInfoContent(
+            walletName = walletName,
+            viewModel = viewModel,
+            onDeleteComplete = onBack,
+            showTitle = false
+        )
+    }
+}
+
+@Composable
+fun WalletInfoContent(
+    walletName: String,
+    viewModel: SwapViewModel,
+    onDeleteComplete: (() -> Unit)? = null,
+    showTitle: Boolean = true
+) {
+    val uiState by viewModel.uiState.collectAsState()
+    var showDeleteConfirm1 by remember { mutableStateOf(false) }
+    var showDeleteConfirm2 by remember { mutableStateOf(false) }
+    
+    LaunchedEffect(Unit) {
+        viewModel.fetchWalletBalances()
+    }
+    
+    val sortedTokens = remember(uiState.walletTokens) {
+        uiState.walletTokens.toList().sortedWith { a, b ->
+            val tokenIdA = a.first
+            val tokenIdB = b.first
+            val nameA = viewModel.getTokenName(tokenIdA)
+            val nameB = viewModel.getTokenName(tokenIdB)
             
-            // Delete Button - show for all wallets except maybe a blank state
-            if (walletName.isNotEmpty() && walletName != "Select Wallet") {
-                IconButton(onClick = { showDeleteConfirm1 = true }) {
-                    Text(
-                        text = "\uE872", // Trash icon
-                        color = Color.Red,
-                        fontSize = 24.sp,
-                        fontFamily = MaterialDesignIcons
-                    )
+            fun getAssetPriority(name: String, id: String): Int {
+                if (name.uppercase() == "SIGUSD") return 0
+                if (name.uppercase() == "USE") return 1
+                if (name.uppercase() == "DEXYGOLD") return 2
+                val isNamed = !name.startsWith(id.take(5))
+                if (isNamed) return 10
+                return 100
+            }
+            
+            val prioA = getAssetPriority(nameA, tokenIdA)
+            val prioB = getAssetPriority(nameB, tokenIdB)
+            
+            if (prioA != prioB) return@sortedWith prioA.compareTo(prioB)
+            
+            val hasLogoA = viewModel.hasLogo(tokenIdA)
+            val hasLogoB = viewModel.hasLogo(tokenIdB)
+            
+            if (hasLogoA != hasLogoB) return@sortedWith if (hasLogoA) -1 else 1
+            
+            nameA.compareTo(nameB)
+        }
+    }
+
+    Column(
+        modifier = Modifier.fillMaxSize()
+    ) {
+        if (showTitle) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = 15.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "WALLETS",
+                    color = ColorAccent,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                
+                if (walletName.isNotEmpty() && walletName != "Select Wallet") {
+                    IconButton(onClick = { showDeleteConfirm1 = true }, modifier = Modifier.size(24.dp)) {
+                        Text(
+                            text = "\uE872",
+                            color = Color.Red.copy(alpha = 0.7f),
+                            fontSize = 18.sp,
+                            fontFamily = MaterialDesignIcons
+                        )
+                    }
                 }
             }
         }
@@ -141,7 +167,7 @@ fun WalletInfoScreen(
                     TextButton(onClick = {
                         showDeleteConfirm2 = false
                         viewModel.deleteWallet(walletName)
-                        onBack()
+                        onDeleteComplete?.invoke()
                     }) {
                         Text("DELETE", color = Color.Red)
                     }
@@ -213,7 +239,6 @@ fun WalletInfoScreen(
         }
 
         if (selectedTab == 0) {
-            // Token list
             if (uiState.walletTokens.isEmpty()) {
                 Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                     Text(
@@ -231,7 +256,6 @@ fun WalletInfoScreen(
                 }
             }
         } else {
-            // History list
             val walletTrades = remember(uiState.trades, uiState.selectedAddress) {
                 uiState.trades.filter { it.address == uiState.selectedAddress }.reversed()
             }
