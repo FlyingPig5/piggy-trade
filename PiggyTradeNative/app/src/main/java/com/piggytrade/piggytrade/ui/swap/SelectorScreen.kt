@@ -135,7 +135,7 @@ fun <T> SelectorScreen(
                                 if (labelText.isNotEmpty()) {
                                     Text(
                                         text = labelText,
-                                        color = ColorOrange,
+                                        color = if (status == 1) ColorTextDim else ColorOrange,
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Normal
                                     )

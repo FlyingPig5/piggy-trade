@@ -89,8 +89,9 @@ interface ErgoNodeApi {
     @GET("/utils/ergoTreeToAddress/{ergoTree}")
     suspend fun ergoTreeToAddress(@Path("ergoTree") ergoTree: String): Map<String, @JvmSuppressWildcards Any>
 
-    @GET("/utils/addressToErgoTree/{address}")
+    @GET("/script/addressToTree/{address}")
     suspend fun addressToErgoTree(@Path("address") address: String): Map<String, @JvmSuppressWildcards Any>
+
 }
 
 class NodeClient(private val nodeUrl: String) {

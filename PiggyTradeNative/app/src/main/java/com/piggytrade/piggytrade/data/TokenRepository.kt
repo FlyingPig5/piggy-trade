@@ -86,31 +86,36 @@ class TokenRepository(private val context: Context) {
         if (tokenKey == "ERG") return 0
         if (tokenKey.equals("USE", ignoreCase = true) || tokenKey.equals("DexyGold", ignoreCase = true)) return 0
         
-        // Try direct lookup first
+        // 1. Direct Pool Key check - if it's in our map, we know its specific PID.
         val directData = tokens[tokenKey]
         if (directData != null) {
             val pid = directData["pid"] as? String ?: (directData["lp"] as? String ?: "")
             if (isSystemVerified(pid)) return 0
             if (isUserVerified(pid)) return 1
+            return 2 // Known pool, but unverified
         }
         
-        // Fallback: search all tokens to see if this name matches any whitelisted PID
+        // 2. Ticker/Asset check (Fallback) - used for wallet tokens or simple names.
+        // We consider an asset verified if AT LEAST ONE pool with this name is official.
+        var userFound = false
         for ((_, data) in tokens) {
             val pid = data["pid"] as? String ?: (data["lp"] as? String ?: "")
             val nameIn = data["name_in"] as? String
             val nameOut = data["name_out"] as? String
             val nameOfficial = data["name"] as? String
             
-            val isMatch = (nameIn != null && nameIn.equals(tokenKey, ignoreCase = true)) ||
-                         (nameOut != null && nameOut.equals(tokenKey, ignoreCase = true)) ||
-                         (nameOfficial != null && nameOfficial.equals(tokenKey, ignoreCase = true))
+            val isAssetMatch = (nameIn != null && nameIn.equals(tokenKey, ignoreCase = true)) ||
+                              (nameOut != null && nameOut.equals(tokenKey, ignoreCase = true)) ||
+                              (nameOfficial != null && nameOfficial.equals(tokenKey, ignoreCase = true)) ||
+                              (data.containsKey("id") && tokenKey.length > 30 && data["id"] == tokenKey) // tokenId match
             
-            if (isMatch) {
-                if (isSystemVerified(pid)) return 0 // If any pool for this token is official, token is verified
+            if (isAssetMatch) {
+                if (isSystemVerified(pid)) return 0
+                if (isUserVerified(pid)) userFound = true
             }
         }
         
-        return 2
+        return if (userFound) 1 else 2
     }
 
     data class BlockchainBox(

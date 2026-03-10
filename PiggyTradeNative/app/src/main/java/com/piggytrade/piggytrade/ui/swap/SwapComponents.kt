@@ -136,7 +136,7 @@ fun FromTokenPanel(uiState: SwapState, viewModel: SwapViewModel) {
                         if (uiState.fromAsset.isNotEmpty()) {
                             TokenImage(tokenId = viewModel.getTokenId(uiState.fromAsset), modifier = Modifier.size(40.dp).padding(end = 5.dp))
                         }
-                        val baseName = if (uiState.fromAsset.isNotEmpty()) viewModel.getTokenName(viewModel.getTokenId(uiState.fromAsset)) else "SELECT"
+                        val baseName = if (uiState.fromAsset.isNotEmpty()) uiState.fromAsset else "SELECT"
                         Text(text = baseName, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         Icon(painter = painterResource(id = android.R.drawable.arrow_down_float), contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp).padding(start = 4.dp))
                     }
@@ -208,7 +208,7 @@ fun ToTokenPanel(uiState: SwapState, viewModel: SwapViewModel) {
                         if (uiState.toAsset.isNotEmpty()) {
                             TokenImage(tokenId = viewModel.getTokenId(uiState.toAsset), modifier = Modifier.size(40.dp).padding(end = 5.dp))
                         }
-                        val baseName = if (uiState.toAsset.isNotEmpty()) viewModel.getTokenName(viewModel.getTokenId(uiState.toAsset)) else "SELECT"
+                        val baseName = if (uiState.toAsset.isNotEmpty()) uiState.toAsset else "SELECT"
                         Text(text = baseName, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         Icon(painter = painterResource(id = android.R.drawable.arrow_down_float), contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp).padding(start = 4.dp))
                     }
@@ -220,84 +220,129 @@ fun ToTokenPanel(uiState: SwapState, viewModel: SwapViewModel) {
 
 @Composable
 fun OrderDetailsPanel(uiState: SwapState, viewModel: SwapViewModel) {
-    TogaColumn(
+    var isExpanded by remember { mutableStateOf(false) }
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 10.dp, vertical = 2.dp)
-            .androidBorder(radius = 12.dp, borderWidth = 0.dp, bgColor = ColorSelectionBg.copy(alpha = 0.8f))
+            .androidBorder(radius = 12.dp, borderWidth = 0.5.dp, borderColor = Color.White.copy(alpha = 0.05f), bgColor = ColorSelectionBg.copy(alpha = 0.8f))
+            .clickable { isExpanded = !isExpanded }
             .padding(15.dp)
     ) {
-        Text(text = "ORDER DETAILS", color = ColorAccent, fontSize = 9.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
-
-        TogaRow(
+        // Summary Row: Rate & Price Impact
+        Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(text = "Rate:", color = ColorText, fontSize = 11.sp)
-            val fromAmt = uiState.fromAmount.replace(",", ".").toDoubleOrNull() ?: 1.0
-            val toQuoteAmt = uiState.toQuote.replace(",", ".").toDoubleOrNull() ?: 0.0
-            val rate = if (fromAmt > 0) toQuoteAmt / fromAmt else 0.0
-            Text(text = "1 ${uiState.fromAsset} = ${String.format("%.4f", rate)} ${uiState.toAsset}", color = Color.White, fontSize = 11.sp)
-        }
+            Column(modifier = Modifier.weight(1f)) {
+                // Rate & Impact on one line
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Rate
+                    val fromAmt = uiState.fromAmount.replace(",", ".").toDoubleOrNull() ?: 1.0
+                    val toQuoteAmt = uiState.toQuote.replace(",", ".").toDoubleOrNull() ?: 0.0
+                    val rate = if (fromAmt > 0) toQuoteAmt / fromAmt else 0.0
+                    
+                    Text(text = "Rate: ", color = ColorTextDim, fontSize = 11.sp)
+                    Text(text = "1 ${uiState.fromAsset} = ${String.format("%.4f", rate)} ${uiState.toAsset}", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
 
-        Spacer(modifier = Modifier.height(8.dp))
+                    if (!isExpanded) {
+                        Spacer(Modifier.width(15.dp))
+                        Text(text = "Impact: ", color = ColorTextDim, fontSize = 11.sp)
+                        val impactColor = if (uiState.priceImpact < 1.0) Color(0xFF00D18B) else if (uiState.priceImpact > 5.0) ColorSent else Color.White
+                        Text(
+                            text = "${String.format("%.2f", uiState.priceImpact)}%",
+                            color = impactColor,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
 
-        TogaRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(text = "Price Impact:", color = ColorText, fontSize = 11.sp)
-            val impactColor = if (uiState.priceImpact < 1.0) Color(0xFF00D18B) else if (uiState.priceImpact > 5.0) Color.Red else Color.White
+            // Expand Icon
             Text(
-                text = "${String.format("%.2f", uiState.priceImpact)}%",
-                color = impactColor,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        TogaRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(text = "LP Fee:", color = ColorText, fontSize = 11.sp)
-            Text(
-                text = "${String.format("%.1f", uiState.lpFee * 100)}%",
+                text = if (isExpanded) "\uE5CE" else "\uE5CF", // ExpandLess / ExpandMore
                 color = Color.White,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold
+                fontSize = 20.sp,
+                fontFamily = MaterialDesignIcons
             )
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        // Expanded Content
+        if (isExpanded) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Divider(color = Color.White.copy(alpha = 0.05f), thickness = 0.5.dp)
+            Spacer(modifier = Modifier.height(12.dp))
 
-        TogaRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(text = "Miner Fee:", color = ColorText, fontSize = 11.sp)
-            Text(
-                text = "${String.format("%.3f", uiState.minerFee)} ERG",
-                color = Color.White,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold
+            // Price Impact (Full Row)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(text = "Price Impact:", color = ColorTextDim, fontSize = 11.sp)
+                val impactColor = if (uiState.priceImpact < 1.0) Color(0xFF00D18B) else if (uiState.priceImpact > 5.0) ColorSent else Color.White
+                Text(
+                    text = "${String.format("%.2f", uiState.priceImpact)}%",
+                    color = impactColor,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // LP Fee
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(text = "LP Fee:", color = ColorTextDim, fontSize = 11.sp)
+                Text(
+                    text = "${String.format("%.1f", uiState.lpFee * 100)}%",
+                    color = Color.White,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // App Fee (Service Fee)
+            if (uiState.serviceFee > 0) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(text = "App Fee:", color = ColorTextDim, fontSize = 11.sp)
+                    Text(
+                        text = "${String.format("%.5f", uiState.serviceFee)} ERG",
+                        color = Color.White,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Miner Fee
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(text = "Miner Fee:", color = ColorTextDim, fontSize = 11.sp)
+                Text(
+                    text = "${String.format("%.5f", uiState.minerFee)} ERG",
+                    color = ColorAccent,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            Slider(
+                value = uiState.minerFee.toFloat(),
+                onValueChange = { viewModel.setMinerFee(it.toDouble()) },
+                valueRange = 0.001f..0.2f,
+                modifier = Modifier.fillMaxWidth(),
+                colors = SliderDefaults.colors(
+                    thumbColor = ColorAccent,
+                    activeTrackColor = ColorAccent,
+                    inactiveTrackColor = ColorTextDim.copy(alpha = 0.3f)
+                )
             )
-        }
-
-        Slider(
-            value = uiState.minerFee.toFloat(),
-            onValueChange = { viewModel.setMinerFee(it.toDouble()) },
-            valueRange = 0.001f..0.2f,
-            modifier = Modifier.fillMaxWidth()
-        )
-        TogaRow(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(text = "Slow", color = ColorTextDim, fontSize = 9.sp)
-            Text(text = "Fast", color = ColorTextDim, fontSize = 9.sp)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(text = "Slow", color = ColorTextDim, fontSize = 9.sp)
+                Text(text = "Fast", color = ColorTextDim, fontSize = 9.sp)
+            }
         }
     }
 }

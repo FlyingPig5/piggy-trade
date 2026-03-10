@@ -77,6 +77,7 @@ data class SwapState(
     val activeSelector: String? = null, // "from", "to", "fav", "wallet"
     val nodeUrl: String = "",
     val isToAssetFavorite: Boolean = false,
+    val serviceFee: Double = 0.0,
     val activeTab: String = "dex" // "dex", "wallet"
 )
 
@@ -114,8 +115,10 @@ data class TxBox(
     val boxId: String,
     val value: Long,
     val address: String,
-    val assets: List<Map<String, Any>>
+    val assets: List<Map<String, Any>>,
+    val ergoTree: String = ""
 )
+
 
 data class NetworkTransaction(
     val id: String,
@@ -127,8 +130,10 @@ data class NetworkTransaction(
     val outputs: List<TxBox>,
     val inclusionHeight: Int?,
     val numConfirmations: Int?,
-    val label: String? = null
+    val label: String? = null,
+    val fee: Long = 0L
 )
+
 
 data class ReviewParams(
     val buyAmount: String,
@@ -147,6 +152,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     private val TAG = "SwapViewModel"
     private val preferenceManager = PreferenceManager(application)
     private val tokenRepository = TokenRepository(application)
+    private var quoteJob: kotlinx.coroutines.Job? = null
 
     private val _uiState: MutableStateFlow<SwapState> by lazy {
         Log.d(TAG, "Initializing MutableStateFlow...")
@@ -234,7 +240,31 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
+
+    private val _resolvedAddresses = MutableStateFlow<Map<String, String>>(emptyMap())
+    val resolvedAddresses: StateFlow<Map<String, String>> = _resolvedAddresses.asStateFlow()
+
+    fun resolveErgoTree(ergoTree: String) {
+        if (ergoTree.isEmpty() || _resolvedAddresses.value.containsKey(ergoTree)) return
+        
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val client = nodeClient ?: return@launch
+                val res = client.api.ergoTreeToAddress(ergoTree)
+                val address = (res["address"] as? String) ?: ""
+                if (address.isNotEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        _resolvedAddresses.value = _resolvedAddresses.value + (ergoTree to address)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("SwapVM", "addrToTree failed for $ergoTree: ${e.message}")
+            }
+        }
+    }
+
     private var nodeClient: NodeClient? = null
+
     private var trader: Trader? = null
 
     // ─── INIT & NODE MANAGEMENT ──────────────────────────────────────────────
@@ -279,7 +309,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     // ─── BALANCES & FORMATTING ───────────────────────────────────────────────
 
     fun formatBalance(tokenId: String, amount: Long): String {
-        if (tokenId == "ERG") return String.format("%.4f", amount.toDouble() / 1_000_000_000.0)
+        if (tokenId == "ERG") return String.format("%.5f", amount.toDouble() / 1_000_000_000.0)
         val decimals = tokenRepository.getTokenDecimals(tokenId)
         if (decimals == 0) return amount.toString()
         val divisor = Math.pow(10.0, decimals.toDouble())
@@ -295,14 +325,14 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         val tAsset = getTokenId(current.toAsset)
         
         val fBal = if (fAsset == "ERG") {
-            if (walletErg > 0.0) String.format("%.4f", walletErg) else ""
+            if (walletErg > 0.0) String.format("%.5f", walletErg) else ""
         } else {
             val amt = walletTokens[fAsset] ?: 0L
             if (amt > 0L) formatBalance(fAsset, amt) else ""
         }
         
         val tBal = if (tAsset == "ERG") {
-            if (walletErg > 0.0) String.format("%.4f", walletErg) else ""
+            if (walletErg > 0.0) String.format("%.5f", walletErg) else ""
         } else {
             val amt = walletTokens[tAsset] ?: 0L
             if (amt > 0L) formatBalance(tAsset, amt) else ""
@@ -316,7 +346,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         val current = _uiState.value
         if (id == "ERG") {
             if (current.walletErgBalance <= 0.0) return null
-            return String.format("%.4f", current.walletErgBalance)
+            return String.format("%.5f", current.walletErgBalance)
         }
         val amount = current.walletTokens[id] ?: 0L
         if (amount <= 0L) return null
@@ -331,7 +361,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             fromPulseTrigger = System.currentTimeMillis()
         )
         updateBalances()
-        fetchQuote()
+        fetchQuote(delayMs = 0)
     }
 
     fun setToAsset(asset: String) {
@@ -343,17 +373,17 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             isToAssetFavorite = isFav
         )
         updateBalances()
-        fetchQuote()
+        fetchQuote(delayMs = 0)
     }
 
     fun setFromAmount(amount: String) {
         _uiState.value = _uiState.value.copy(fromAmount = amount)
-        fetchQuote()
+        fetchQuote(delayMs = 400)
     }
 
     fun setMaxAmount() {
         _uiState.value = _uiState.value.copy(fromAmount = _uiState.value.fromBalance)
-        fetchQuote()
+        fetchQuote(delayMs = 0)
     }
 
     fun swapDirection() {
@@ -369,7 +399,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 isToAssetFavorite = isFav
             )
             updateBalances()
-            fetchQuote()
+            fetchQuote(delayMs = 0)
         }
     }
 
@@ -705,7 +735,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
     // ─── QUOTE & TX PREPARATION ──────────────────────────────────────────────
 
-    private fun fetchQuote() {
+    private fun fetchQuote(delayMs: Long = 400) {
         val current = _uiState.value
         val amountStr = current.fromAmount.replace(",", ".")
         val amount = amountStr.toDoubleOrNull() ?: 0.0
@@ -715,28 +745,46 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        _uiState.value = _uiState.value.copy(isLoadingQuote = true, toQuote = "Fetching...")
+        quoteJob?.cancel()
+        quoteJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            if (delayMs > 0) kotlinx.coroutines.delay(delayMs)
+            
+            withContext(kotlinx.coroutines.Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(isLoadingQuote = true, toQuote = "Fetching...")
+            }
 
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val route = withContext(kotlinx.coroutines.Dispatchers.Default) {
                     tokenRepository.tradeMapper.resolve(current.fromAsset, current.toAsset)
                 }
                 if (route != null && trader != null) {
                     val (quote, impact) = trader!!.getQuote(
-                        tokenName = route.tokenKey,
+                        poolKey = route.tokenKey,
                         amount = amount,
                         orderType = route.orderType,
                         poolType = route.poolType,
                         checkMempool = current.includeUnconfirmed
                     )
                         val lpFee = (tokenRepository.tokens[route.tokenKey]?.get("fee") as? Number)?.toDouble() ?: 0.0
+                        
+                        // Calculate expected service fee
+                        val ergValueForFee = if (current.fromAsset == "ERG") {
+                            amount * 1_000_000_000.0
+                        } else if (current.toAsset == "ERG") {
+                            quote.replace(",", "").replace(" ", "").toDoubleOrNull()?.times(1_000_000_000.0) ?: 0.0
+                        } else {
+                            0.0
+                        }
+                        val signer = com.piggytrade.piggytrade.blockchain.ErgoSigner("")
+                        val sFee = signer.getNodeConfigP2(ergValueForFee.toLong()).toDouble() / 1_000_000_000.0
+
                         withContext(kotlinx.coroutines.Dispatchers.Main) {
                             _uiState.value = _uiState.value.copy(
                                 isLoadingQuote = false,
                                 toQuote = quote,
                                 priceImpact = impact,
-                                lpFee = lpFee
+                                lpFee = lpFee,
+                                serviceFee = sFee
                             )
                         }
                 } else {
@@ -799,16 +847,8 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         if (assetA.isEmpty() || assetB.isEmpty()) return true
         if (assetA == assetB) return false
         
-        // ERG case
-        if (assetA == "ERG" || assetB == "ERG") {
-            val tokenName = if (assetA == "ERG") assetB else assetA
-            return tokenRepository.tokens.containsKey(tokenName)
-        }
-        
-        // Token to Token case
-        val pairName1 = "$assetA-$assetB"
-        val pairName2 = "$assetB-$assetA"
-        return tokenRepository.tokens.containsKey(pairName1) || tokenRepository.tokens.containsKey(pairName2)
+        // Use TradeMapper for more robust route checking
+        return tokenRepository.tradeMapper.resolve(assetA, assetB) != null
     }
     
     fun getTokenId(name: String): String {
@@ -818,10 +858,25 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         
         if (name.length >= 64 && name.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }) return name
         
-        tokenRepository.tokens.forEach { (tName, data) ->
+        val allTokens = tokenRepository.tokens
+        
+        // 1. Direct key match (most reliable for renamed pools)
+        allTokens[name]?.let { data ->
+            return (data["id"] as? String) ?: (data["id_in"] as? String) ?: name
+        }
+
+        // 2. Case-insensitive key match
+        allTokens.forEach { (tName, data) ->
+            if (tName.equals(name, ignoreCase = true)) {
+                return (data["id"] as? String) ?: (data["id_in"] as? String) ?: name
+            }
+        }
+
+        // 3. Asset name search within pools (fallback for generic tickers)
+        allTokens.forEach { (tName, data) ->
             if (data.containsKey("id_in")) {
                 val nameIn = data["name_in"] as? String ?: tName.split("-").firstOrNull() ?: ""
-                val nameOut = data["name_out"] as? String ?: tName.split("-").takeIf { it.size > 1 }?.get(1) ?: ""
+                val nameOut = data["name_out"] as? String ?: tName.split("-").getOrNull(1) ?: ""
                 if (nameIn.equals(name, ignoreCase = true)) return data["id_in"] as? String ?: name
                 if (nameOut.equals(name, ignoreCase = true)) return data["id_out"] as? String ?: name
             } else {
@@ -883,7 +938,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
             Log.d(TAG, "Building transaction at height $currentHeight...")
             val txDict = traderLocal.buildSwapTransaction(
-                tokenName = route.tokenKey,
+                poolKey = route.tokenKey,
                 amount = amount,
                 orderType = route.orderType,
                 poolType = route.poolType,
@@ -1103,7 +1158,9 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         
         allTokens.forEach { (key, data) ->
             val pid = data["pid"] as? String ?: (data["lp"] as? String ?: "")
-            val status = getVerificationStatus(key)
+            val isOfficial = data["official"] as? Boolean ?: tokenRepository.isSystemVerified(pid)
+            val isUser = data["user_added"] as? Boolean ?: tokenRepository.isUserVerified(pid)
+            val status = if (isOfficial) 0 else if (isUser) 1 else 2
             
             // Find existing liquidity in state to avoid re-fetching or resetting to "Fetching..."
             val existingState = _uiState.value
@@ -1113,14 +1170,24 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                            ?: "Fetching..."
 
             val displayName = if (data.containsKey("id_in")) {
-                val nameIn = data["name_in"] as? String ?: key.split("-").firstOrNull() ?: ""
-                val nameOut = data["name_out"] as? String ?: key.split("-").takeIf { it.size > 1 }?.get(1) ?: ""
+            val nameIn = (data["name_in"] as? String) ?: key.split("-").firstOrNull() ?: ""
+            val nameOut = (data["name_out"] as? String) ?: key.split("-").getOrNull(1) ?: ""
+            if (status == 1 && !key.contains("-")) {
+                key
+            } else if (status == 2 && key.contains(" (")) {
+                key // Preserve "RSN (abcd)" in dropdown
+            } else {
                 val n1 = getTokenName(getTokenId(nameIn))
                 val n2 = getTokenName(getTokenId(nameOut))
                 "$n1-$n2"
+            }
+        } else {
+            if (status == 1 || (status == 2 && key.contains(" ("))) {
+                key // Use custom rename like "RSN-Alt" or discovered "RSN (abcd)"
             } else {
                 getTokenName(getTokenId(key))
             }
+        }
 
             val mapping = PoolMapping(
                 name = displayName,
@@ -1146,6 +1213,26 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 whitelistedAssets.add(parts[1])
             } else {
                 whitelistedAssets.add(name)
+            }
+        }
+        
+        // Include any token the user has in their wallet IF it exists in a discovered pool but is unverified
+        _uiState.value.walletTokens.forEach { (tid, amount) ->
+            if (amount > 0 && tid != "ERG") {
+                val name = getTokenName(tid)
+                // If it's unverified, check if there's at least one pool for it in the discovered list
+                if (getVerificationStatus(name) == 2) {
+                    val hasPool = discoveredArr.any { p ->
+                        if (p.data.containsKey("id_in")) {
+                            p.data["id_in"] == tid || p.data["id_out"] == tid
+                        } else {
+                            p.data["id"] == tid
+                        }
+                    }
+                    if (hasPool) {
+                        whitelistedAssets.add(name)
+                    }
+                }
             }
         }
         val tokensWithBalance = mutableListOf<String>()
@@ -1326,7 +1413,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                             val unconfList = client.api.getUnconfirmedTransactionsByErgoTree(
                                 offset = 0, limit = 50, ergoTree = reqBody
                             )
-                            newTrades.addAll(parseNetworkTransactions(unconfList, address, false))
+                             newTrades.addAll(parseNetworkTransactions(unconfList, address, false, ergoTree))
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed fetching unconfirmed", e)
@@ -1341,7 +1428,8 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     @Suppress("UNCHECKED_CAST")
                     val confList = confResp["items"] as? List<Map<String, Any>> ?: emptyList()
-                    newTrades.addAll(parseNetworkTransactions(confList, address, true))
+                    newTrades.addAll(parseNetworkTransactions(confList, address, true, null))
+
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed fetching confirmed", e)
                 }
@@ -1369,8 +1457,10 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     private fun parseNetworkTransactions(
         rawList: List<Map<String, Any>>, 
         myAddress: String, 
-        isConfirmed: Boolean
+        isConfirmed: Boolean,
+        myErgoTree: String? = null
     ): List<NetworkTransaction> {
+
         val parsed = mutableListOf<NetworkTransaction>()
 
         for (tx in rawList) {
@@ -1391,12 +1481,19 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             for (inp in rawInputs) {
                 val boxId = inp["boxId"] as? String ?: ""
                 val value = (inp["value"] as? Number)?.toLong() ?: 0L
-                val addr = inp["address"] as? String ?: ""
+                var addr = inp["address"] as? String ?: ""
                 @Suppress("UNCHECKED_CAST")
                 val assets = inp["assets"] as? List<Map<String, Any>> ?: emptyList()
-                parsedInputs.add(TxBox(boxId, value, addr, assets))
+                val tree = inp["ergoTree"] as? String ?: ""
+
+                if (addr.isEmpty() && myErgoTree != null && tree == myErgoTree) {
+                    addr = myAddress
+                }
+
+                parsedInputs.add(TxBox(boxId, value, addr, assets, tree))
 
                 if (addr == myAddress) {
+
                     myErgIn += value
                     for (asset in assets) {
                         val tokenId = asset["tokenId"] as? String ?: continue
@@ -1406,6 +1503,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
+
             val parsedOutputs = mutableListOf<TxBox>()
             var myErgOut = 0L
             val myTokensOut = mutableMapOf<String, Long>()
@@ -1413,12 +1511,19 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             for (outp in rawOutputs) {
                 val boxId = outp["boxId"] as? String ?: ""
                 val value = (outp["value"] as? Number)?.toLong() ?: 0L
-                val addr = outp["address"] as? String ?: ""
+                var addr = outp["address"] as? String ?: ""
                 @Suppress("UNCHECKED_CAST")
                 val assets = outp["assets"] as? List<Map<String, Any>> ?: emptyList()
-                parsedOutputs.add(TxBox(boxId, value, addr, assets))
+                val tree = outp["ergoTree"] as? String ?: ""
+
+                if (addr.isEmpty() && myErgoTree != null && tree == myErgoTree) {
+                    addr = myAddress
+                }
+
+                parsedOutputs.add(TxBox(boxId, value, addr, assets, tree))
 
                 if (addr == myAddress) {
+
                     myErgOut += value
                     for (asset in assets) {
                         val tokenId = asset["tokenId"] as? String ?: continue
@@ -1427,6 +1532,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }
+
 
             val netErgChange = myErgOut - myErgIn
             val netTokenChanges = mutableMapOf<String, Long>()
@@ -1451,6 +1557,9 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
             // Only add if it actually affects our address
             if (myErgIn > 0 || myErgOut > 0 || netTokenChanges.isNotEmpty()) {
+                val feeTree = "1005040004000e36100204a00b08cd0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798ea02d192a39a8cc7a701730073011001020402d19683030193a38cc7b2a57300000193c2b2a57301007473027303830108cdeeac93b1a57304"
+                val feeVal = parsedOutputs.find { it.ergoTree == feeTree }?.value ?: 0L
+
                 parsed.add(NetworkTransaction(
                     id = id,
                     timestamp = timestamp,
@@ -1461,9 +1570,11 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     outputs = parsedOutputs,
                     inclusionHeight = inclusionHeight,
                     numConfirmations = numConfirmations,
-                    label = protocolLabel
+                    label = protocolLabel,
+                    fee = feeVal
                 ))
             }
+
         }
         return parsed
     }

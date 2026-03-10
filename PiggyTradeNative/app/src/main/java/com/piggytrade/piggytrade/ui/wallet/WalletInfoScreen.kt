@@ -21,6 +21,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -177,20 +178,16 @@ fun WalletInfoContent(
                 }
                 
                 if (walletName.isNotEmpty() && walletName != "Select Wallet") {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = ColorSelectionBg,
-                        modifier = Modifier.clickable { showDeleteConfirm1 = true }
-                    ) {
-                        Text(
-                            text = "Delete Wallet",
-                            color = Color.Red,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                        )
-                    }
+                    TogaIconButton(
+                        icon = "\uE872", // ICON_TRASH
+                        onClick = { showDeleteConfirm1 = true },
+                        modifier = Modifier.size(36.dp),
+                        radius = 8.dp,
+                        bgColor = Color(0xFF9E1F1F),
+                        iconColor = Color.White
+                    )
                 }
+
             }
         }
 
@@ -278,7 +275,7 @@ fun WalletInfoContent(
                 
                 Text("Balance", color = ColorTextDim, fontSize = 12.sp)
                 Text(
-                    text = String.format("%.4f ERG", uiState.walletErgBalance),
+                    text = String.format("%.5f ERG", uiState.walletErgBalance),
                     color = ColorAccent,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold
@@ -382,64 +379,92 @@ fun NetworkTradeHistoryItemView(trade: NetworkTransaction, viewModel: SwapViewMo
         colors = CardDefaults.cardColors(containerColor = ColorInputBg),
         shape = RoundedCornerShape(10.dp)
     ) {
-        Column(modifier = Modifier.padding(15.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
-                // FORMAT TIMESTAMP
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(15.dp)
+        ) {
+            // Left Column: Date, Financials, TxID
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(0.7f)
+                    .align(Alignment.TopStart)
+            ) {
+                // DATE
                 val sdf = java.text.SimpleDateFormat("d MMMM yyyy HH:mm", java.util.Locale.US)
                 val dateString = sdf.format(java.util.Date(trade.timestamp))
                 Text(dateString, color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
-                
-                Column(horizontalAlignment = Alignment.End) {
-                    if (trade.isConfirmed) {
-                        Text("CONFIRMED", color = Color.Green.copy(alpha=0.7f), fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    } else {
-                        Text("UNCONFIRMED", color = Color.Yellow, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                    }
 
-                    trade.label?.let { label ->
-                        Text(
-                            text = label,
-                            color = ColorAccent,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 2.dp)
-                        )
-                    }
+                // Line gap before financial data
+                Spacer(Modifier.height(15.dp))
+
+                // ERG CHANGE
+                if (trade.netErgChange != 0L) {
+                    val symbol = if (trade.netErgChange > 0) "+" else "-"
+                    val ergVal = Math.abs(trade.netErgChange.toDouble() / 1_000_000_000.0)
+                    val color = if (trade.netErgChange > 0) Color.Green else ColorSent
+                    Text("$symbol${String.format("%.5f", ergVal)} ERG", color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                 }
-            }
-            
-            Spacer(Modifier.height(5.dp))
-            
-            // Show Net ERG
-            if (trade.netErgChange != 0L) {
-                val symbol = if (trade.netErgChange > 0) "+" else ""
-                val ergVal = trade.netErgChange.toDouble() / 1_000_000_000.0
-                val color = if (trade.netErgChange > 0) Color.Green else Color.Red
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Removed "Erg Change: " label
-                    Text("$symbol${String.format("%.4f", ergVal)} ERG", color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-            
-            // Show Net Tokens
-            trade.netTokenChanges.forEach { (tokenId, netAmt) ->
-                val symbol = if (netAmt > 0) "+" else ""
-                val name = viewModel.getTokenName(tokenId)
-                val formattedAmt = viewModel.formatBalance(tokenId, Math.abs(netAmt))
-                val color = if (netAmt > 0) Color.Green else Color.Red
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // Removed "Token Change: " label
+
+                // TOKEN CHANGES
+                trade.netTokenChanges.forEach { (tokenId, netAmt) ->
+                    val symbol = if (netAmt > 0) "+" else "-"
+                    val name = viewModel.getTokenName(tokenId)
+                    val formattedAmt = viewModel.formatBalance(tokenId, Math.abs(netAmt))
+                    val color = if (netAmt > 0) Color.Green else ColorSent
                     Text("$symbol$formattedAmt $name", color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                 }
+
+                if (trade.netErgChange == 0L && trade.netTokenChanges.isEmpty()) {
+                    Text("Self transfer / No balance change", color = ColorTextDim, fontSize = 12.sp)
+                }
+
+                Spacer(Modifier.height(10.dp))
+                // TxID
+                Text(
+                    text = "TxID: ${trade.id.take(12)}...${trade.id.takeLast(12)}", 
+                    color = ColorTextDim, 
+                    fontSize = 10.sp, 
+                    fontFamily = FontFamily.Monospace
+                )
             }
-            
-            if (trade.netErgChange == 0L && trade.netTokenChanges.isEmpty()) {
-                Text("Self transfer / No balance change", color = ColorTextDim, fontSize = 12.sp)
+
+            // Right Column - Top: Status, Label
+            Column(
+                modifier = Modifier.align(Alignment.TopEnd),
+                horizontalAlignment = Alignment.End
+            ) {
+                // STATUS
+                if (trade.isConfirmed) {
+                    Text("CONFIRMED", color = Color.Green.copy(alpha=0.7f), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                } else {
+                    Text("UNCONFIRMED", color = Color.Yellow, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+
+                // PROTOCOL LABEL (under status)
+                trade.label?.let { label ->
+                    Text(
+                        text = label,
+                        color = ColorAccent,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
             }
-            
-            Spacer(Modifier.height(8.dp))
-            Text("TxID: ${trade.id.take(12)}...${trade.id.takeLast(12)}", color = ColorTextDim, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+
+            // Right Column - Bottom: Fee
+            if (trade.fee > 0L) {
+                Text(
+                    text = "fee: ${String.format("%.5f", trade.fee.toDouble() / 1_000_000_000.0)} ERG",
+                    color = ColorTextDim,
+                    fontSize = 11.sp,
+                    modifier = Modifier.align(Alignment.BottomEnd)
+                )
+            }
         }
+
+
     }
     
     if (showDetails) {
@@ -503,7 +528,7 @@ fun NetworkTradeHistoryItemView(trade: NetworkTransaction, viewModel: SwapViewMo
                         Column(modifier = Modifier.padding(vertical = 5.dp)) {
                             val addr = if (inp.address.length > 20) inp.address.take(10) + "..." + inp.address.takeLast(10) else inp.address
                             Text(addr, color = ColorTextDim, fontSize = 10.sp)
-                            Text("${String.format("%.4f", inp.value.toDouble() / 1_000_000_000.0)} ERG", color = Color.White, fontSize = 12.sp)
+                            Text("${String.format("%.5f", inp.value.toDouble() / 1_000_000_000.0)} ERG", color = Color.White, fontSize = 12.sp)
                             inp.assets.forEach { map ->
                                 val tId = map["tokenId"] as? String ?: ""
                                 val amt = (map["amount"] as? Number)?.toLong() ?: 0L
@@ -521,7 +546,7 @@ fun NetworkTradeHistoryItemView(trade: NetworkTransaction, viewModel: SwapViewMo
                         Column(modifier = Modifier.padding(vertical = 5.dp)) {
                             val addr = if (out.address.length > 20) out.address.take(10) + "..." + out.address.takeLast(10) else out.address
                             Text(addr, color = ColorTextDim, fontSize = 10.sp)
-                            Text("${String.format("%.4f", out.value.toDouble() / 1_000_000_000.0)} ERG", color = Color.White, fontSize = 12.sp)
+                            Text("${String.format("%.5f", out.value.toDouble() / 1_000_000_000.0)} ERG", color = Color.White, fontSize = 12.sp)
                             out.assets.forEach { map ->
                                 val tId = map["tokenId"] as? String ?: ""
                                 val amt = (map["amount"] as? Number)?.toLong() ?: 0L

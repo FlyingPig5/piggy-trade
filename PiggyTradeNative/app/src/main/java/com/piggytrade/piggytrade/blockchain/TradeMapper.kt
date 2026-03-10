@@ -3,9 +3,10 @@ package com.piggytrade.piggytrade.blockchain
 import android.util.Log
 
 data class TradeRoute(
-    val tokenKey: String,
+    val tokenKey: String, // Original key from tokens map
     val orderType: String,
-    val poolType: String
+    val poolType: String,
+    val pid: String = ""
 )
 
 class TradeMapper(private val tokens: Map<String, Map<String, Any>>) {
@@ -17,18 +18,15 @@ class TradeMapper(private val tokens: Map<String, Map<String, Any>>) {
 
     // Normalized asset names reachable directly from ERG
     private val ergTokens = mutableSetOf<String>()
-    // pairSides: normalized pair key -> (normalizedSide1, normalizedSide2)
-    private val pairSides = mutableMapOf<String, Pair<String, String>>()
-    // pairKeyOriginal: normalized pair key -> original key in `tokens` map
-    private val pairKeyOriginal = mutableMapOf<String, String>()
+    
+    // Maps original token key -> Pair(n1, n2)
+    private val poolAssetPairs = mutableMapOf<String, Pair<String, String>>()
 
     init {
-        // 1. Identify all pairs first
         for ((key, data) in tokens) {
-            val hasT2T = data.containsKey("id_in") || data.containsKey("id_out")
-            val hasDash = key.contains("-")
+            val isT2T = data.containsKey("id_in") || data.containsKey("id_out")
             
-            if (hasT2T || hasDash) {
+            if (isT2T) {
                 val nameIn = (data["name_in"] as? String)
                 val nameOut = (data["name_out"] as? String)
                 
@@ -39,17 +37,9 @@ class TradeMapper(private val tokens: Map<String, Map<String, Any>>) {
                 val n1 = com.piggytrade.piggytrade.data.TokenRepository.normalizeTokenName(rawN1)
                 val n2 = com.piggytrade.piggytrade.data.TokenRepository.normalizeTokenName(rawN2)
                 
-                val normalizedKey = "$n1-$n2"
-                pairSides[normalizedKey] = Pair(n1, n2)
-                pairKeyOriginal[normalizedKey] = key
-            }
-        }
-        
-        // 2. Identify ERG-to-Token assets (everything that isn't a pair)
-        for ((key, data) in tokens) {
-            val isT2T = data.containsKey("id_in") || data.containsKey("id_out")
-            val hasDash = key.contains("-")
-            if (!isT2T && !hasDash) {
+                poolAssetPairs[key] = Pair(n1, n2)
+            } else {
+                // ERG pool. The key is the identifier/name.
                 ergTokens.add(com.piggytrade.piggytrade.data.TokenRepository.normalizeTokenName(key))
             }
         }
@@ -59,7 +49,7 @@ class TradeMapper(private val tokens: Map<String, Map<String, Any>>) {
         val seen = mutableSetOf<String>()
         seen.add(ERG)
         seen.addAll(ergTokens)
-        for ((_, sides) in pairSides) {
+        for (sides in poolAssetPairs.values) {
             seen.add(sides.first)
             seen.add(sides.second)
         }
@@ -82,7 +72,7 @@ class TradeMapper(private val tokens: Map<String, Map<String, Any>>) {
             reachable.add(ERG)
         }
 
-        for ((_, sides) in pairSides) {
+        for (sides in poolAssetPairs.values) {
             if (fa == sides.second) {
                 reachable.add(sides.first)
             } else if (fa == sides.first) {
@@ -94,45 +84,58 @@ class TradeMapper(private val tokens: Map<String, Map<String, Any>>) {
         return reachable.sorted()
     }
 
+    /**
+     * Resolve exactly which POOL to use. 
+     * If there are multiple pools for the same pair, this currently picks the FIRST one.
+     * In a robust implementation, this would pick the most liquid one.
+     */
     fun resolve(fromAsset: String, toAsset: String): TradeRoute? {
         val fa = normalizeAsset(fromAsset) ?: return null
         val ta = normalizeAsset(toAsset) ?: return null
 
         Log.d(TAG, "resolve('$fromAsset','$toAsset') -> fa='$fa' ta='$ta' ergTokens=${ergTokens.size}")
 
-        if (fa == ERG && ta in ergTokens) {
-            val originalKey = findOriginalErgKey(ta)
-            Log.d(TAG, "BUY ERG->Token route: key='$originalKey'")
-            return TradeRoute(tokenKey = originalKey, orderType = "BUY", poolType = "erg")
+        // 1. Check ERG-Token pools
+        if (fa == ERG) {
+            // Find a pool for ta where fa is ERG
+            for ((key, data) in tokens) {
+                if (data.containsKey("id_in")) continue // skip T2T
+                val nToken = com.piggytrade.piggytrade.data.TokenRepository.normalizeTokenName(key)
+                if (nToken == ta) {
+                    val pid = data["pid"] as? String ?: ""
+                    return TradeRoute(tokenKey = key, orderType = "BUY", poolType = "erg", pid = pid)
+                }
+            }
         }
-        if (ta == ERG && fa in ergTokens) {
-            val originalKey = findOriginalErgKey(fa)
-            Log.d(TAG, "SELL Token->ERG route: key='$originalKey'")
-            return TradeRoute(tokenKey = originalKey, orderType = "SELL", poolType = "erg")
+        if (ta == ERG) {
+            // Find a pool for fa where ta is ERG
+            for ((key, data) in tokens) {
+                if (data.containsKey("id_in")) continue // skip T2T
+                val nToken = com.piggytrade.piggytrade.data.TokenRepository.normalizeTokenName(key)
+                if (nToken == fa) {
+                    val pid = data["pid"] as? String ?: ""
+                    return TradeRoute(tokenKey = key, orderType = "SELL", poolType = "erg", pid = pid)
+                }
+            }
         }
 
-        for ((normalizedKey, sides) in pairSides) {
-            val originalKey = pairKeyOriginal[normalizedKey] ?: normalizedKey
+        // 2. Check Token-Token pools
+        for ((key, sides) in poolAssetPairs) {
+            val pid = tokens[key]?.get("pid") as? String ?: ""
             if (fa == sides.second && ta == sides.first) {
-                return TradeRoute(tokenKey = originalKey, orderType = "BUY", poolType = "token")
+                return TradeRoute(tokenKey = key, orderType = "BUY", poolType = "token", pid = pid)
             }
             if (fa == sides.first && ta == sides.second) {
-                return TradeRoute(tokenKey = originalKey, orderType = "SELL", poolType = "token")
+                return TradeRoute(tokenKey = key, orderType = "SELL", poolType = "token", pid = pid)
             }
         }
 
-        Log.w(TAG, "No route for '$fa' -> '$ta'. ergTokens sample: ${ergTokens.take(5)}")
+        Log.w(TAG, "No route for '$fa' -> '$ta'.")
         return null
     }
 
-    // Find the original key in the `tokens` map that normalizes to the given name
-    private fun findOriginalErgKey(normalizedName: String): String {
-        val trimmed = normalizedName.trim()
-        if (tokens.containsKey(trimmed)) return trimmed
-        return tokens.keys.firstOrNull { it.trim().equals(trimmed, ignoreCase = true) } ?: trimmed
-    }
-
     fun describeRoute(route: TradeRoute, amount: String, expected: String): String {
+        val data = tokens[route.tokenKey]
         if (route.poolType == "erg") {
             return if (route.orderType == "BUY") {
                 "$expected ${route.tokenKey} for $amount ERG"
@@ -140,11 +143,13 @@ class TradeMapper(private val tokens: Map<String, Map<String, Any>>) {
                 "$expected ERG for $amount ${route.tokenKey}"
             }
         } else {
-            val sides = pairSides[route.tokenKey] ?: Pair(route.tokenKey, "???")
+            val n1 = com.piggytrade.piggytrade.data.TokenRepository.normalizeTokenName(data?.get("name_in") as? String ?: route.tokenKey.split("-")[0])
+            val n2 = com.piggytrade.piggytrade.data.TokenRepository.normalizeTokenName(data?.get("name_out") as? String ?: route.tokenKey.split("-").getOrNull(1) ?: "")
+            
             return if (route.orderType == "BUY") {
-                "$expected ${sides.first} for $amount ${sides.second}"
+                "$expected $n1 for $amount $n2"
             } else {
-                "$expected ${sides.second} for $amount ${sides.first}"
+                "$expected $n2 for $amount $n1"
             }
         }
     }

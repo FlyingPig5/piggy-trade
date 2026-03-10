@@ -23,4 +23,6 @@ val ColorBlue = Color(0xFF58A6FF)
 val ColorIcon = Color(0xFFF0F6FC)
 val ColorOrange = Color(0xFFFF8C00)
 val ColorTextDim = Color(0xFF8B949E)
+val ColorSent = Color(0xFFE57373)
 val ColorPink = Color(0xFFFF69B4) // Added Pig Colore
+

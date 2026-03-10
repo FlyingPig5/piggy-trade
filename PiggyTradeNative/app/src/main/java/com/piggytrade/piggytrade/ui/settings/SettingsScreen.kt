@@ -109,15 +109,19 @@ fun SettingsScreen(
             )
         }
 
-        TogaColumn(
+        // Main Content Area
+        TradeCard(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 10.dp)
-                .padding(bottom = 10.dp)
                 .verticalScroll(scrollState)
-                .androidBorder(radius = 30.dp, borderWidth = 0.dp, bgColor = ColorCard)
-                .padding(top = 5.dp, bottom = 20.dp, start = 20.dp, end = 20.dp)
         ) {
+            TogaColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 10.dp)
+                    .padding(bottom = 20.dp, top = 5.dp)
+            ) {
+
             TogaColumn(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 15.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -338,13 +342,13 @@ fun SettingsScreen(
                 )
 
                 TogaRow(
-                    modifier = Modifier.fillMaxWidth().padding(start = 10.dp, end = 5.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = Color(0xFF24336B))
+                            .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = ColorSelectionBg)
                             .clickable { 
                                 showSyncConfirm = true
                             }
@@ -353,9 +357,8 @@ fun SettingsScreen(
                     ) {
                         Text("Manage Trading Pairs", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
-
-                    }
                 }
+
 
                 // Wallet Management Section
                 Text(
@@ -367,13 +370,13 @@ fun SettingsScreen(
                 )
 
                 TogaRow(
-                    modifier = Modifier.fillMaxWidth().padding(start = 10.dp, end = 5.dp, bottom = 10.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = Color(0xFF24336B))
+                            .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = ColorSelectionBg)
                             .clickable { showExportWarning = true }
                             .padding(vertical = 12.dp),
                         contentAlignment = Alignment.Center
@@ -392,8 +395,13 @@ fun SettingsScreen(
                         Text("Restore Wallets", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
+
             }
         }
+    }
+}
+
+
 
     // Animated Selector Overlay for Node Selection
     Box(modifier = Modifier.fillMaxSize()) {
@@ -474,7 +482,7 @@ fun SettingsScreen(
     if (showExportWarning) {
         AlertDialog(
             onDismissRequest = { showExportWarning = false },
-            title = { Text("SECURITY WARNING", color = Color.Red, fontWeight = FontWeight.ExtraBold) },
+            title = { Text("SECURITY WARNING", color = ColorSent, fontWeight = FontWeight.ExtraBold) },
             text = { 
                 Text(
                     "This will export all your wallets including encrypted mnemonics.\n\n" +
@@ -519,7 +527,7 @@ fun SettingsScreen(
                     showImportConfirm = false
                     viewModel.importWallets(pendingImportJson)
                 }) {
-                    Text("OVERWRITE", color = Color.Red)
+                    Text("OVERWRITE", color = ColorSent)
                 }
             },
             dismissButton = {
@@ -530,5 +538,4 @@ fun SettingsScreen(
         )
     }
 }
-
 }

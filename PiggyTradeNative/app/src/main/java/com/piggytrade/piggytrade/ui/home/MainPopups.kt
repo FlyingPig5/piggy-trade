@@ -59,7 +59,7 @@ fun TokenSelectorPopup(uiState: SwapState, viewModel: SwapViewModel) {
                                 viewModel.setActiveSelector(null)
                             },
                             onBack = { viewModel.setActiveSelector(null) },
-                            getName = { viewModel.getTokenName(viewModel.getTokenId(it)) },
+                            getName = { it },
                             getId = { viewModel.getTokenId(it) },
                             getBalance = { viewModel.getUserBalance(it) },
                             getVerificationStatus = { viewModel.getVerificationStatus(it) },

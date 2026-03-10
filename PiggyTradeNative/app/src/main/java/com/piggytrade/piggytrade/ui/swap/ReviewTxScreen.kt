@@ -113,9 +113,9 @@ fun ReviewTxScreen(
                 val totalFee = params.minerFee + params.serviceFee
                 
                 val displayText = if (params.payToken == "ERG") {
-                    "${String.format("%.4f", payAmtValue + totalFee)} ERG"
+                    "${String.format("%.5f", payAmtValue + totalFee)} ERG"
                 } else {
-                    "${params.payAmount} ${params.payToken} + ${String.format("%.4f", totalFee)} ERG"
+                    "${params.payAmount} ${params.payToken} + ${String.format("%.5f", totalFee)} ERG"
                 }
 
                 Text(
@@ -127,7 +127,7 @@ fun ReviewTxScreen(
                 )
 
                 Text(
-                    text = "Miner Fee: ${String.format("%.4f", params.minerFee)} + App Fee: ${String.format("%.4f", params.serviceFee)} ERG",
+                    text = "Miner Fee: ${String.format("%.5f", params.minerFee)} + App Fee: ${String.format("%.5f", params.serviceFee)} ERG",
                     color = ColorTextDim,
                     fontSize = 12.sp,
                     modifier = Modifier.padding(bottom = 20.dp)
@@ -176,7 +176,7 @@ fun ReviewTxScreen(
                         
                         Text("USER WALLET", color = ColorBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Text("Sending: ${params.payAmount} ${params.payToken}", color = Color.White, fontSize = 13.sp)
-                        Text("Sending: ${String.format("%.4f", params.minerFee + params.serviceFee)} ERG (Fee)", color = Color.White, fontSize = 13.sp)
+                        Text("Sending: ${String.format("%.5f", params.minerFee + params.serviceFee)} ERG (Fee)", color = Color.White, fontSize = 13.sp)
                         Text("Receiving: ${params.buyAmount} ${params.buyToken}", color = Color.White, fontSize = 13.sp)
                     }
                     Spacer(Modifier.height(10.dp))
@@ -215,10 +215,11 @@ fun ReviewTxScreen(
                     ) {
                         Text(
                             text = errorText,
-                            color = Color.Red,
+                            color = ColorSent,
                             fontSize = 12.sp,
                             modifier = Modifier.padding(15.dp)
                         )
+
                     }
                 }
             }

@@ -10,9 +10,11 @@ class Trader(
     private val tokens: Map<String, Map<String, Any>>,
     private val signer: ErgoSigner? = null
 ) {
+    private val poolBoxCache = mutableMapOf<String, Pair<Long, Map<String, Any>>>()
+    private val CACHE_DURATION_MS = 10_000L
 
-    private fun getTokenConfig(tokenName: String): Map<String, Any> {
-        val trimmed = tokenName.trim()
+    private fun getPoolConfig(poolKey: String): Map<String, Any> {
+        val trimmed = poolKey.trim()
         val direct = tokens[trimmed]
         if (direct != null) return direct
 
@@ -23,23 +25,39 @@ class Trader(
             }
         }
 
+        // Search by PID
+        for (info in tokens.values) {
+            if ((info["pid"] as? String) == trimmed) {
+                return info
+            }
+        }
+
         // Case-insensitive search by 'name' field
         for (info in tokens.values) {
             if ((info["name"] as? String)?.equals(trimmed, ignoreCase = true) == true) {
                 return info
             }
         }
-        throw IllegalArgumentException("Token '$tokenName' not found")
+        throw IllegalArgumentException("Pool '$poolKey' not found")
     }
 
-    suspend fun getQuote(tokenName: String, amount: Double, orderType: String, poolType: String = "erg", checkMempool: Boolean = true): Pair<String, Double> {
+    suspend fun getQuote(poolKey: String, amount: Double, orderType: String, poolType: String = "erg", checkMempool: Boolean = true): Pair<String, Double> {
         return try {
-            val cfg = getTokenConfig(tokenName)
+            val cfg = getPoolConfig(poolKey)
             val tokenId = cfg["id"] as? String ?: ""
             val tokenPid = cfg["pid"] as? String ?: ""
-            // lp is unused in node_client logic for getting pool box by token pid, but it was in python
             
-            val poolBox = client.getPoolBox(tokenPid, checkMempool) ?: return Pair("Error: Pool not found", 0.0)
+            val cacheKey = "$tokenPid-$checkMempool"
+            val cached = poolBoxCache[cacheKey]
+            val now = System.currentTimeMillis()
+            
+            val poolBox = if (cached != null && (now - cached.first) < CACHE_DURATION_MS) {
+                cached.second
+            } else {
+                val box = client.getPoolBox(tokenPid, checkMempool) ?: return Pair("Error: Pool not found", 0.0)
+                poolBoxCache[cacheKey] = Pair(now, box)
+                box
+            }
             
             val poolNanoerg = (poolBox["value"] as? Number)?.toLong() ?: 0L
             val amountDec = BigDecimal.valueOf(amount)
@@ -151,7 +169,7 @@ class Trader(
     }
 
     suspend fun buildSwapTransaction(
-        tokenName: String,
+        poolKey: String,
         amount: Double,
         orderType: String,
         poolType: String = "erg",
@@ -163,19 +181,19 @@ class Trader(
         if (builder == null) throw IllegalStateException("TxBuilder not provided")
         
         val feeNano = (fee * 1_000_000_000).toLong()
-        val cfg = getTokenConfig(tokenName)
+        val cfg = getPoolConfig(poolKey)
         val tokenId = cfg["id"] as? String ?: ""
         val tokenPid = cfg["pid"] as? String ?: ""
         val lpId = cfg["lp"] as? String ?: ""
         
         // Fetch pool box
-        val poolBox = client.getPoolBox(tokenPid, includeUnconfirmed) ?: throw IllegalArgumentException("Pool box for ${tokenName} not found")
+        val poolBox = client.getPoolBox(tokenPid, includeUnconfirmed) ?: throw IllegalArgumentException("Pool box for ${poolKey} not found")
         
         var lpSwapBox: Map<String, Any>? = null
-        if (tokenName.equals("use", true) || tokenName.equals("dexygold", true)) {
-            val cfgLp = if (tokenName.equals("use", true)) com.piggytrade.piggytrade.protocol.NetworkConfig.USE_CONFIG else com.piggytrade.piggytrade.protocol.NetworkConfig.DEXYGOLD_CONFIG
+        if (poolKey.equals("use", true) || poolKey.equals("dexygold", true)) {
+            val cfgLp = if (poolKey.equals("use", true)) com.piggytrade.piggytrade.protocol.NetworkConfig.USE_CONFIG else com.piggytrade.piggytrade.protocol.NetworkConfig.DEXYGOLD_CONFIG
             val lpNftId = cfgLp["lp_nft"] as String
-            lpSwapBox = client.getPoolBox(lpNftId, includeUnconfirmed) ?: throw IllegalArgumentException("${tokenName.uppercase()} LP Swap Box not found!")
+            lpSwapBox = client.getPoolBox(lpNftId, includeUnconfirmed) ?: throw IllegalArgumentException("${poolKey.uppercase()} LP Swap Box not found!")
         }
         
         // Fetch user assets
@@ -191,9 +209,9 @@ class Trader(
         
         if (poolType == "erg") {
             val poolTokenBal = getBal(poolBox, tokenId)
-            if (tokenName.equals("use", true) || tokenName.equals("dexygold", true)) {
+            if (poolKey.equals("use", true) || poolKey.equals("dexygold", true)) {
                 // LP config
-                val cfgLp = if (tokenName.equals("use", true)) com.piggytrade.piggytrade.protocol.NetworkConfig.USE_CONFIG else com.piggytrade.piggytrade.protocol.NetworkConfig.DEXYGOLD_CONFIG
+                val cfgLp = if (poolKey.equals("use", true)) com.piggytrade.piggytrade.protocol.NetworkConfig.USE_CONFIG else com.piggytrade.piggytrade.protocol.NetworkConfig.DEXYGOLD_CONFIG
                 poolAddr = cfgLp["pool_address"] as String
                 val lpNft = cfgLp["lp_nft"] as String
                 val lpSwapAddr = cfgLp["lp_swap_address"] as String
