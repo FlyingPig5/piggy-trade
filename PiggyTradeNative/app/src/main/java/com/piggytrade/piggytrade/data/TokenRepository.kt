@@ -19,20 +19,25 @@ class TokenRepository(private val context: Context) {
     private val whitelistFile = File(context.filesDir, "custom_whitelist.json")
 
     private val systemWhitelistPids by lazy { loadSystemWhitelistPids() }
+    private val systemWhitelistNameMap by lazy { loadSystemWhitelistNameMap() }
     private var customWhitelistPids: MutableSet<String> = loadCustomWhitelistPids().toMutableSet()
+
+    private fun loadSystemWhitelistNameMap(): Map<String, String> {
+        val map = mutableMapOf<String, String>()
+        (com.piggytrade.piggytrade.protocol.NetworkConfig.USE_CONFIG["lp_nft"] as? String)?.let { map[it] = "USE" }
+        (com.piggytrade.piggytrade.protocol.NetworkConfig.DEXYGOLD_CONFIG["lp_nft"] as? String)?.let { map[it] = "DexyGold" }
+        return map
+    }
 
     private fun loadSystemWhitelistPids(): Set<String> {
         val pids = mutableSetOf<String>()
-        
-        // Add hardcoded special token PIDs (from NetworkConfig)
-        pids.add(com.piggytrade.piggytrade.protocol.NetworkConfig.USE_CONFIG["lp_nft"] as String)
-        pids.add(com.piggytrade.piggytrade.protocol.NetworkConfig.DEXYGOLD_CONFIG["lp_nft"] as String)
-        
         try {
             val inputStream = context.assets.open("tokens.json")
             val type = object : TypeToken<Map<String, Map<String, Any>>>() {}.type
-            val data: Map<String, Map<String, Any>> = gson.fromJson(InputStreamReader(inputStream), type)
-            pids.addAll(data.values.mapNotNull { it["pid"] as? String })
+            val data: Map<String, Map<String, Any>> = gson.fromJson(InputStreamReader(inputStream), type) ?: emptyMap()
+            data.values.forEach { 
+                (it["pid"] as? String)?.let { p -> pids.add(p) }
+            }
         } catch (e: Exception) {
             Log.e("TokenRepo", "Error loading tokens.json: ${e.message}")
         }
@@ -55,10 +60,20 @@ class TokenRepository(private val context: Context) {
     }
 
     fun isPidWhitelisted(pid: String): Boolean {
-        return systemWhitelistPids.contains(pid) || customWhitelistPids.contains(pid)
+        // Hardcoded Official PIDs
+        val isHardcoded = pid == com.piggytrade.piggytrade.protocol.NetworkConfig.USE_CONFIG["lp_nft"] ||
+                         pid == com.piggytrade.piggytrade.protocol.NetworkConfig.DEXYGOLD_CONFIG["lp_nft"]
+        
+        return isHardcoded || systemWhitelistPids.contains(pid) || customWhitelistPids.contains(pid)
     }
 
-    fun isSystemVerified(pid: String): Boolean = systemWhitelistPids.contains(pid)
+    fun isSystemVerified(pid: String): Boolean {
+        val usePid = com.piggytrade.piggytrade.protocol.NetworkConfig.USE_CONFIG["pid"] as? String
+        val dexyPid = com.piggytrade.piggytrade.protocol.NetworkConfig.DEXYGOLD_CONFIG["pid"] as? String
+        val isHardcoded = pid.isNotEmpty() && (pid == usePid || pid == dexyPid)
+        return isHardcoded || (pid.isNotEmpty() && systemWhitelistPids.contains(pid))
+    }
+    
     fun isUserVerified(pid: String): Boolean = customWhitelistPids.contains(pid)
 
     /**
@@ -71,9 +86,30 @@ class TokenRepository(private val context: Context) {
         if (tokenKey == "ERG") return 0
         if (tokenKey.equals("USE", ignoreCase = true) || tokenKey.equals("DexyGold", ignoreCase = true)) return 0
         
-        val data = tokens[tokenKey] ?: return 2
-        if (data["official"] as? Boolean == true) return 0
-        if (data["user_added"] as? Boolean == true) return 1
+        // Try direct lookup first
+        val directData = tokens[tokenKey]
+        if (directData != null) {
+            val pid = directData["pid"] as? String ?: (directData["lp"] as? String ?: "")
+            if (isSystemVerified(pid)) return 0
+            if (isUserVerified(pid)) return 1
+        }
+        
+        // Fallback: search all tokens to see if this name matches any whitelisted PID
+        for ((_, data) in tokens) {
+            val pid = data["pid"] as? String ?: (data["lp"] as? String ?: "")
+            val nameIn = data["name_in"] as? String
+            val nameOut = data["name_out"] as? String
+            val nameOfficial = data["name"] as? String
+            
+            val isMatch = (nameIn != null && nameIn.equals(tokenKey, ignoreCase = true)) ||
+                         (nameOut != null && nameOut.equals(tokenKey, ignoreCase = true)) ||
+                         (nameOfficial != null && nameOfficial.equals(tokenKey, ignoreCase = true))
+            
+            if (isMatch) {
+                if (isSystemVerified(pid)) return 0 // If any pool for this token is official, token is verified
+            }
+        }
+        
         return 2
     }
 
@@ -190,7 +226,17 @@ class TokenRepository(private val context: Context) {
             } catch (e: Exception) {}
         }
 
+
+
         val existingTokens = loadCombinedTokens()
+        val knownPids = existingTokens.values.flatMap { 
+            listOfNotNull(
+                it["pid"] as? String,
+                it["lp"] as? String
+            )
+        }.toSet()
+        val currentKnownPids = knownPids.toMutableSet()
+
         // Track names that were already known from assets (tokens.json) so we don't re-report them as "new"
         val assetKnownNames: Set<String> = try {
             val type = object : com.google.gson.reflect.TypeToken<Map<String, Map<String, Any>>>() {}.type
@@ -212,6 +258,7 @@ class TokenRepository(private val context: Context) {
         val finalTokenToToken = mutableMapOf<String, Map<String, Any>>()
         
         val officialPids = systemWhitelistPids
+        val officialNameMap = systemWhitelistNameMap
 
         // Temporary maps to track best liquidity seen so far during this sync
         val bestErgLiquidity = mutableMapOf<String, Long>()
@@ -233,32 +280,45 @@ class TokenRepository(private val context: Context) {
                 data["name"] = entryName
                 
                 val currentErg = (boxMap["value"] as? Number)?.toLong() ?: 0L
+                val existing = finalErgToToken[entryName]
+                val wasVerified = existing != null && ((existing["official"] as? Boolean ?: false) || (existing["whitelisted"] as? Boolean ?: false))
+                val isVerified = officialPids.contains(pid) || isPidWhitelisted(pid)
+                
                 val bestSoFar = bestErgLiquidity[entryName] ?: 0L
                 
-                if (currentErg > bestSoFar) {
-                    bestErgLiquidity[entryName] = currentErg
-                    val isSpecialToken = entryName.equals("USE", ignoreCase = true) || entryName.equals("DexyGold", ignoreCase = true)
-                    
-                    if (!isSpecialToken) {
-                        data["official"] = officialPids.contains(pid)
-                        data["user_added"] = customWhitelistPids.contains(pid)
-                        data["whitelisted"] = officialPids.contains(pid) || customWhitelistPids.contains(pid)
+                val isBetter = when {
+                    existing == null -> true
+                    officialPids.contains(pid) && !(existing["official"] as? Boolean ?: false) -> true
+                    isVerified && !wasVerified -> true
+                    !isVerified && wasVerified -> false
+                    else -> currentErg > bestSoFar
+                }
 
-                        // If the PID is official, we truly skip because we already have it in assets.
-                        // If the NAME is official but PID is different, we allow discovery but with a suffix.
-                        if (!officialPids.contains(pid)) {
-                            val finalDiscoveryName = if (assetKnownNames.contains(entryName)) {
-                                "$entryName (${pid.take(4)})"
-                            } else {
-                                entryName
-                            }
-                            data["name"] = finalDiscoveryName
-                            
-                            if (!assetKnownNames.contains(finalDiscoveryName) && !customWhitelistPids.contains(pid)) {
-                                newTokensAdded.add(finalDiscoveryName)
-                            }
-                            finalErgToToken[finalDiscoveryName] = data
+                if (isBetter) {
+                    bestErgLiquidity[entryName] = currentErg
+                    data["official"] = officialPids.contains(pid)
+                    data["user_added"] = customWhitelistPids.contains(pid)
+                    data["whitelisted"] = isPidWhitelisted(pid)
+                    data["name"] = entryName
+
+                    if (!officialPids.contains(pid)) {
+                        val finalDiscoveryName = if (assetKnownNames.contains(entryName)) {
+                            "$entryName (${pid.take(4)})"
+                        } else {
+                            entryName
                         }
+                        data["name"] = finalDiscoveryName
+                        
+                        if (!currentKnownPids.contains(pid)) {
+                            newTokensAdded.add(finalDiscoveryName)
+                            currentKnownPids.add(pid)
+                        }
+                        finalErgToToken[finalDiscoveryName] = data
+                    } else {
+                        // Official token found
+                        val officialName = if (entryName.isNotEmpty()) entryName else (officialNameMap[pid] ?: "Unlabeled")
+                        data["name"] = officialName
+                        finalErgToToken[officialName] = data
                     }
                 }
             } else {
@@ -277,28 +337,46 @@ class TokenRepository(private val context: Context) {
                 data["name_out"] = nameOut
                 
                 val currentLiquidity = if (assets.size >= 3) (assets[2]["amount"] as? Number)?.toLong() ?: 0L else 0L
+                val existing = finalTokenToToken[entryName]
+                val wasVerified = existing != null && ((existing["official"] as? Boolean ?: false) || (existing["whitelisted"] as? Boolean ?: false))
+                val isVerified = officialPids.contains(pid) || isPidWhitelisted(pid)
+
                 val bestSoFar = bestTokenLiquidity[entryName] ?: 0L
-                
-                if (currentLiquidity > bestSoFar) {
-                    bestTokenLiquidity[entryName] = currentLiquidity
-                    data["official"] = officialPids.contains(pid)
-                    data["user_added"] = customWhitelistPids.contains(pid)
-                    data["whitelisted"] = officialPids.contains(pid) || customWhitelistPids.contains(pid)
 
-                    if (!officialPids.contains(pid)) {
-                        val finalDiscoveryName = if (assetKnownNames.contains(entryName)) {
-                            "$entryName (${pid.take(4)})"
-                        } else {
-                            entryName
-                        }
-                        data["name"] = finalDiscoveryName
-
-                        if (!assetKnownNames.contains(finalDiscoveryName) && !customWhitelistPids.contains(pid)) {
-                            newTokensAdded.add(finalDiscoveryName)
-                        }
-                        finalTokenToToken[finalDiscoveryName] = data
-                    }
+                val isBetter = when {
+                    existing == null -> true
+                    officialPids.contains(pid) && !(existing["official"] as? Boolean ?: false) -> true
+                    isVerified && !wasVerified -> true
+                    !isVerified && wasVerified -> false
+                    else -> currentLiquidity > bestSoFar
                 }
+
+                if (isBetter) {
+                        bestTokenLiquidity[entryName] = currentLiquidity
+                        data["official"] = officialPids.contains(pid)
+                        data["user_added"] = customWhitelistPids.contains(pid)
+                        data["whitelisted"] = isPidWhitelisted(pid)
+
+                        if (!officialPids.contains(pid)) {
+                            val finalDiscoveryName = if (assetKnownNames.contains(entryName)) {
+                                "$entryName (${pid.take(4)})"
+                            } else {
+                                entryName
+                            }
+                            data["name"] = finalDiscoveryName
+
+                            if (!currentKnownPids.contains(pid)) {
+                                newTokensAdded.add(finalDiscoveryName)
+                                currentKnownPids.add(pid)
+                            }
+                            finalTokenToToken[finalDiscoveryName] = data
+                        } else {
+                            // Official token found - store it using on-chain metadata
+                            val officialName = if (entryName.isNotEmpty()) entryName else (officialNameMap[pid] ?: "Unlabeled")
+                            data["name"] = officialName
+                            finalTokenToToken[officialName] = data
+                        }
+                    }
             }
             onProgress(index + 1, total, newTokensAdded.toList(), "Analysing box ${index + 1} of $total")
         }
@@ -323,11 +401,12 @@ class TokenRepository(private val context: Context) {
         const val ADDR_TOKEN_TO_TOKEN = "3gb1RZucekcRdda82TSNS4FZSREhGLoi1FxGDmMZdVeLtYYixPRviEdYireoM9RqC6Jf4kx85Y1jmUg5XzGgqdjpkhHm7kJZdgUR3VBwuLZuyHVqdSNv3eanqpknYsXtUwvUA16HFwNa3HgVRAnGC8zj8U7kksrfjycAM1yb19BB4TYR2BKWN7mpvoeoTuAKcAFH26cM46CEYsDRDn832wVNTLAmzz4Q6FqE29H9euwYzKiebgxQbWUxtupvfSbKaHpQcZAo5Dhyc6PFPyGVFZVRGZZ4Kftgi1NMRnGwKG7NTtXsFMsJP6A7yvLy8UZaMPe69BUAkpbSJdcWem3WpPUE7UpXv4itDkS5KVVaFtVyfx8PQxzi2eotP2uXtfairHuKinbpSFTSFKW3GxmXaw7vQs1JuVd8NhNShX6hxSqCP6sxojrqBxA48T2KcxNrmE3uFk7Pt4vPPdMAS4PW6UU82UD9rfhe3SMytK6DkjCocuRwuNqFoy4k25TXbGauTNgKuPKY3CxgkTpw9WfWsmtei178tLefhUEGJueueXSZo7negPYtmcYpoMhCuv4G1JZc283Q7f3mNXS"
 
         fun normalizeTokenName(name: String): String {
+            val trimmed = name.trim()
             return when {
-                name.equals("ERG", ignoreCase = true) -> "ERG"
-                name.equals("USE", ignoreCase = true) -> "USE"
-                name.equals("DexyGold", ignoreCase = true) -> "DexyGold"
-                else -> name
+                trimmed.equals("ERG", ignoreCase = true) -> "ERG"
+                trimmed.equals("USE", ignoreCase = true) -> "USE"
+                trimmed.equals("DexyGold", ignoreCase = true) -> "DexyGold"
+                else -> trimmed
             }
         }
     }
@@ -342,23 +421,7 @@ class TokenRepository(private val context: Context) {
     private fun loadCombinedTokens(): Map<String, Map<String, Any>> {
         val type = object : TypeToken<Map<String, Map<String, Any>>>() {}.type
         
-        // 1. Load official tokens (Assets)
-        val officialTokens: Map<String, Map<String, Any>> = try {
-            val inputStream = context.assets.open("tokens.json")
-            val map: Map<String, Map<String, Any>> = gson.fromJson(InputStreamReader(inputStream), type) ?: emptyMap()
-            map.mapValues { (k, v) -> 
-                val mut = v.toMutableMap()
-                if (!mut.containsKey("name")) mut["name"] = k
-                mut["official"] = true
-                mut["whitelisted"] = true
-                mut 
-            }
-        } catch (e: Exception) {
-            Log.e("TokenRepo", "Error loading tokens.json from assets: ${e.message}")
-            emptyMap()
-        }
-
-        // 2. Load synced tokens (Local Files)
+        // 1. Load synced tokens (Local Files)
         val syncedErgToToken: Map<String, Map<String, Any>> = try {
             if (ergToTokenFile.exists()) gson.fromJson(ergToTokenFile.readText(), type) else emptyMap()
         } catch (e: Exception) { emptyMap() }
@@ -367,36 +430,41 @@ class TokenRepository(private val context: Context) {
             if (tokenToTokenFile.exists()) gson.fromJson(tokenToTokenFile.readText(), type) else emptyMap()
         } catch (e: Exception) { emptyMap() }
 
-        // Start with official tokens as priority
         val combined = mutableMapOf<String, Map<String, Any>>()
-        combined.putAll(officialTokens)
         
-        // Add synced tokens only if they are not already official
-        val pidMap = mutableMapOf<String, String>()
-        officialTokens.forEach { (key, data) ->
-            val pid = data["pid"] as? String ?: (data["lp"] as? String ?: "")
-            if (pid.isNotEmpty()) pidMap[pid] = key
-        }
-
         fun addSynced(syncedMap: Map<String, Map<String, Any>>) {
             syncedMap.forEach { (key, data) ->
                 val pid = data["pid"] as? String ?: (data["lp"] as? String ?: "")
                 if (pid.isNotEmpty()) {
-                    // Priority Check: Sync only if both Name and PID are NOT in the official list
-                    if (!pidMap.containsKey(pid) && !officialTokens.containsKey(key)) {
-                        val mut = data.toMutableMap()
+                    val mut = data.toMutableMap()
+                    if (isSystemVerified(pid)) {
+                        mut["official"] = true
+                        mut["whitelisted"] = true
+                    } else {
                         mut["official"] = false
-                        mut["user_added"] = customWhitelistPids.contains(pid)
                         mut["whitelisted"] = isPidWhitelisted(pid)
-                        combined[key] = mut
-                        pidMap[pid] = key
                     }
+                    mut["user_added"] = customWhitelistPids.contains(pid)
+                    combined[key] = mut
                 }
             }
         }
 
         addSynced(syncedErgToToken)
         addSynced(syncedTokenToToken)
+
+        // 2. Inject specialized hardcoded tokens
+        val useCfg = com.piggytrade.piggytrade.protocol.NetworkConfig.USE_CONFIG
+        combined["USE"] = useCfg.toMutableMap().apply {
+            put("official", true)
+            put("whitelisted", true)
+        }
+        
+        val dexyCfg = com.piggytrade.piggytrade.protocol.NetworkConfig.DEXYGOLD_CONFIG
+        combined["DexyGold"] = dexyCfg.toMutableMap().apply {
+            put("official", true)
+            put("whitelisted", true)
+        }
 
         return combined
     }
@@ -438,6 +506,10 @@ class TokenRepository(private val context: Context) {
     private fun resolveRawTokenName(tokenId: String): String {
         if (tokenId.equals("ERG", ignoreCase = true)) return "ERG"
         
+        // 0. Hardcoded specialized tokens (Check by Token ID)
+        if (tokenId == com.piggytrade.piggytrade.protocol.NetworkConfig.USE_CONFIG["id"]) return "USE"
+        if (tokenId == com.piggytrade.piggytrade.protocol.NetworkConfig.DEXYGOLD_CONFIG["id"]) return "DexyGold"
+
         // 1. Check direct ERG-to-Token matches in current pools
         for ((name, data) in tokens) {
             if (data["id"] == tokenId) return name
@@ -446,8 +518,10 @@ class TokenRepository(private val context: Context) {
         // 2. Check Token-to-Token pools for component matches
         for ((name, data) in tokens) {
             if (name.contains("-")) {
-                if (data["id_in"] == tokenId) return name.split("-")[0]
-                if (data["id_out"] == tokenId) return name.split("-")[1]
+                val idIn = data["id_in"]
+                val idOut = data["id_out"]
+                if (idIn == tokenId) return name.split("-")[0]
+                if (idOut == tokenId) return name.split("-")[1]
             }
         }
         
@@ -460,7 +534,7 @@ class TokenRepository(private val context: Context) {
 
     fun getTokenDecimals(tokenId: String): Int {
         if (tokenId == "ERG") return 9
-        // Check static tokens.json
+        // Check current tokens (must be synced/discovered to have valid metadata)
         for ((_, data) in tokens) {
             if (data["id"] == tokenId) {
                 return (data["dec"] as? Number)?.toInt() ?: 0
@@ -585,7 +659,6 @@ class TokenRepository(private val context: Context) {
     }
 
     fun updateTokenData(key: String, data: Map<String, Any>) {
-        val officialPids = systemWhitelistPids
         val all = tokens.toMutableMap()
         all[key] = data
         
@@ -596,11 +669,10 @@ class TokenRepository(private val context: Context) {
             saveCustomWhitelist(customWhitelistPids)
         }
         
-        saveToFiles(all, officialPids)
+        saveToFiles(all)
     }
 
     fun renameTokenData(oldKey: String, newKey: String, data: Map<String, Any>) {
-        val officialPids = systemWhitelistPids
         val all = tokens.toMutableMap()
         all.remove(oldKey)
         all[newKey] = data
@@ -612,12 +684,12 @@ class TokenRepository(private val context: Context) {
             saveCustomWhitelist(customWhitelistPids)
         }
         
-        saveToFiles(all, officialPids)
+        saveToFiles(all)
     }
 
-    private fun saveToFiles(all: Map<String, Map<String, Any>>, officialPids: Set<String>) {
-        val ergs = all.filter { !it.value.containsKey("id_in") && !officialPids.contains(it.value["pid"] as? String) }
-        val t2ts = all.filter { it.value.containsKey("id_in") && !officialPids.contains(it.value["pid"] as? String) }
+    private fun saveToFiles(all: Map<String, Map<String, Any>>) {
+        val ergs = all.filter { !it.value.containsKey("id_in") }
+        val t2ts = all.filter { it.value.containsKey("id_in") }
         
         try {
             ergToTokenFile.writeText(gson.toJson(ergs))

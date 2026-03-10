@@ -15,22 +15,22 @@ class TradeMapper(private val tokens: Map<String, Map<String, Any>>) {
         private const val TAG = "TradeMapper"
     }
 
-    // Set of normalized display names for ERG-to-Token pools (e.g. "USE", "SigUSD", ...)
-    private val ergTokens: Set<String> = tokens.entries
-        .filter { !it.value.containsKey("id_in") }
-        .map { com.piggytrade.piggytrade.data.TokenRepository.normalizeTokenName(it.key) }
-        .toSet()
-
+    // Normalized asset names reachable directly from ERG
+    private val ergTokens = mutableSetOf<String>()
     // pairSides: normalized pair key -> (normalizedSide1, normalizedSide2)
     private val pairSides = mutableMapOf<String, Pair<String, String>>()
     // pairKeyOriginal: normalized pair key -> original key in `tokens` map
     private val pairKeyOriginal = mutableMapOf<String, String>()
 
     init {
+        // 1. Identify all pairs first
         for ((key, data) in tokens) {
-            if (data.containsKey("id_in")) {
-                val nameIn = data["name_in"] as? String
-                val nameOut = data["name_out"] as? String
+            val hasT2T = data.containsKey("id_in") || data.containsKey("id_out")
+            val hasDash = key.contains("-")
+            
+            if (hasT2T || hasDash) {
+                val nameIn = (data["name_in"] as? String)
+                val nameOut = (data["name_out"] as? String)
                 
                 val parts = key.split("-", limit = 2)
                 val rawN1 = nameIn ?: parts[0]
@@ -42,6 +42,15 @@ class TradeMapper(private val tokens: Map<String, Map<String, Any>>) {
                 val normalizedKey = "$n1-$n2"
                 pairSides[normalizedKey] = Pair(n1, n2)
                 pairKeyOriginal[normalizedKey] = key
+            }
+        }
+        
+        // 2. Identify ERG-to-Token assets (everything that isn't a pair)
+        for ((key, data) in tokens) {
+            val isT2T = data.containsKey("id_in") || data.containsKey("id_out")
+            val hasDash = key.contains("-")
+            if (!isT2T && !hasDash) {
+                ergTokens.add(com.piggytrade.piggytrade.data.TokenRepository.normalizeTokenName(key))
             }
         }
     }
@@ -118,8 +127,9 @@ class TradeMapper(private val tokens: Map<String, Map<String, Any>>) {
 
     // Find the original key in the `tokens` map that normalizes to the given name
     private fun findOriginalErgKey(normalizedName: String): String {
-        if (tokens.containsKey(normalizedName)) return normalizedName
-        return tokens.keys.firstOrNull { it.equals(normalizedName, ignoreCase = true) } ?: normalizedName
+        val trimmed = normalizedName.trim()
+        if (tokens.containsKey(trimmed)) return trimmed
+        return tokens.keys.firstOrNull { it.trim().equals(trimmed, ignoreCase = true) } ?: trimmed
     }
 
     fun describeRoute(route: TradeRoute, amount: String, expected: String): String {

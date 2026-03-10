@@ -1,4 +1,9 @@
-package com.piggytrade.piggytrade.ui
+package com.piggytrade.piggytrade.ui.wallet
+import com.piggytrade.piggytrade.ui.theme.*
+import com.piggytrade.piggytrade.ui.common.*
+import com.piggytrade.piggytrade.ui.home.*
+import com.piggytrade.piggytrade.ui.swap.*
+import com.piggytrade.piggytrade.ui.settings.*
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -18,7 +23,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.material3.pulltorefresh.PullToRefreshContainer
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.ui.Alignment.Companion.TopCenter
+import kotlinx.coroutines.delay
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WalletInfoScreen(
     walletName: String,
@@ -26,6 +37,7 @@ fun WalletInfoScreen(
     onBack: () -> Unit,
     onNavigateToAddWallet: () -> Unit
 ) {
+    val uiState by viewModel.uiState.collectAsState()
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -53,6 +65,14 @@ fun WalletInfoScreen(
                 modifier = Modifier.padding(start = 10.dp)
             )
             Spacer(modifier = Modifier.weight(1f))
+            
+            if (uiState.isLoadingWallet || uiState.isLoadingHistory) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(20.dp),
+                    color = ColorAccent,
+                    strokeWidth = 2.dp
+                )
+            }
         }
 
         WalletInfoContent(
@@ -65,6 +85,7 @@ fun WalletInfoScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WalletInfoContent(
     walletName: String,
@@ -79,6 +100,7 @@ fun WalletInfoContent(
     
     LaunchedEffect(Unit) {
         viewModel.fetchWalletBalances()
+        viewModel.fetchTransactionHistory()
     }
     
     val sortedTokens = remember(uiState.walletTokens) {
@@ -111,10 +133,26 @@ fun WalletInfoContent(
         }
     }
 
-    Column(
-        modifier = Modifier.fillMaxSize()
+    val pullToRefreshState = rememberPullToRefreshState()
+    if (pullToRefreshState.isRefreshing) {
+        LaunchedEffect(true) {
+            viewModel.fetchWalletBalances()
+            viewModel.fetchTransactionHistory(loadMore = false)
+            // Wait a bit to show the animation
+            delay(1000)
+            pullToRefreshState.endRefresh()
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .nestedScroll(pullToRefreshState.nestedScrollConnection)
     ) {
-        if (showTitle) {
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            if (showTitle) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 15.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -139,12 +177,17 @@ fun WalletInfoContent(
                 }
                 
                 if (walletName.isNotEmpty() && walletName != "Select Wallet") {
-                    IconButton(onClick = { showDeleteConfirm1 = true }, modifier = Modifier.size(24.dp)) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = ColorSelectionBg,
+                        modifier = Modifier.clickable { showDeleteConfirm1 = true }
+                    ) {
                         Text(
-                            text = "\uE872",
-                            color = Color.Red.copy(alpha = 0.7f),
-                            fontSize = 18.sp,
-                            fontFamily = MaterialDesignIcons
+                            text = "Delete Wallet",
+                            color = Color.Red,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                         )
                     }
                 }
@@ -224,7 +267,7 @@ fun WalletInfoContent(
                     ) {
                         Text(
                             text = "\uE14D", // content_copy
-                            color = ColorAccent,
+                            color = Color.White,
                             fontSize = 18.sp,
                             fontFamily = MaterialDesignIcons
                         )
@@ -259,10 +302,12 @@ fun WalletInfoContent(
             contentColor = ColorAccent,
             divider = {},
             indicator = { tabPositions ->
-                TabRowDefaults.Indicator(
-                    Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
-                    color = ColorAccent
-                )
+                if (selectedTab < tabPositions.size) {
+                    TabRowDefaults.SecondaryIndicator(
+                        Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
+                        color = ColorAccent
+                    )
+                }
             },
             modifier = Modifier.padding(bottom = 15.dp)
         ) {
@@ -270,7 +315,7 @@ fun WalletInfoContent(
                 Text("Tokens", modifier = Modifier.padding(vertical = 10.dp), fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Normal)
             }
             Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }) {
-                Text("History", modifier = Modifier.padding(vertical = 10.dp), fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal)
+                Text("Transaction History", modifier = Modifier.padding(vertical = 10.dp), fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Normal)
             }
         }
 
@@ -292,11 +337,9 @@ fun WalletInfoContent(
                 }
             }
         } else {
-            val walletTrades = remember(uiState.trades, uiState.selectedAddress) {
-                uiState.trades.filter { it.address == uiState.selectedAddress }.reversed()
-            }
+            val networkTrades = uiState.networkTrades
             
-            if (walletTrades.isEmpty()) {
+            if (networkTrades.isEmpty() && !uiState.isLoadingHistory) {
                 Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
                     Text("No transaction history", color = ColorTextDim)
                 }
@@ -304,41 +347,197 @@ fun WalletInfoContent(
                 LazyColumn(
                     modifier = Modifier.fillMaxWidth().weight(1f)
                 ) {
-                    items(walletTrades) { trade ->
-                        TradeHistoryItemView(trade)
+                    items(networkTrades) { trade ->
+                        NetworkTradeHistoryItemView(trade, viewModel)
+                    }
+                    if (uiState.isLoadingHistory) {
+                        item {
+                            Box(modifier = Modifier.fillMaxWidth().padding(10.dp), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator(color = ColorAccent, modifier = Modifier.size(24.dp))
+                            }
+                        }
+                    } else if (networkTrades.isNotEmpty()) {
+                        item {
+                            LaunchedEffect(Unit) {
+                                viewModel.fetchTransactionHistory(loadMore = true)
+                            }
+                        }
                     }
                 }
+            }
             }
         }
     }
 }
 
 @Composable
-fun TradeHistoryItemView(trade: TradeHistoryItem) {
+fun NetworkTradeHistoryItemView(trade: NetworkTransaction, viewModel: SwapViewModel) {
+    var showDetails by remember { mutableStateOf(false) }
+    
     Card(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp)
+            .clickable { showDetails = true },
         colors = CardDefaults.cardColors(containerColor = ColorInputBg),
         shape = RoundedCornerShape(10.dp)
     ) {
         Column(modifier = Modifier.padding(15.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(trade.timestamp, color = ColorTextDim, fontSize = 10.sp)
-                if (trade.isSimulation) {
-                    Text("SIMULATION", color = Color.Yellow, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Top) {
+                // FORMAT TIMESTAMP
+                val sdf = java.text.SimpleDateFormat("d MMMM yyyy HH:mm", java.util.Locale.US)
+                val dateString = sdf.format(java.util.Date(trade.timestamp))
+                Text(dateString, color = Color.White.copy(alpha = 0.8f), fontSize = 12.sp)
+                
+                Column(horizontalAlignment = Alignment.End) {
+                    if (trade.isConfirmed) {
+                        Text("CONFIRMED", color = Color.Green.copy(alpha=0.7f), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    } else {
+                        Text("UNCONFIRMED", color = Color.Yellow, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    trade.label?.let { label ->
+                        Text(
+                            text = label,
+                            color = ColorAccent,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
                 }
             }
+            
             Spacer(Modifier.height(5.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Bought: ", color = ColorTextDim, fontSize = 12.sp)
-                Text(trade.buy, color = ColorAccent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            
+            // Show Net ERG
+            if (trade.netErgChange != 0L) {
+                val symbol = if (trade.netErgChange > 0) "+" else ""
+                val ergVal = trade.netErgChange.toDouble() / 1_000_000_000.0
+                val color = if (trade.netErgChange > 0) Color.Green else Color.Red
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Removed "Erg Change: " label
+                    Text("$symbol${String.format("%.4f", ergVal)} ERG", color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                }
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Paid:   ", color = ColorTextDim, fontSize = 12.sp)
-                Text(trade.pay, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            
+            // Show Net Tokens
+            trade.netTokenChanges.forEach { (tokenId, netAmt) ->
+                val symbol = if (netAmt > 0) "+" else ""
+                val name = viewModel.getTokenName(tokenId)
+                val formattedAmt = viewModel.formatBalance(tokenId, Math.abs(netAmt))
+                val color = if (netAmt > 0) Color.Green else Color.Red
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Removed "Token Change: " label
+                    Text("$symbol$formattedAmt $name", color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                }
             }
+            
+            if (trade.netErgChange == 0L && trade.netTokenChanges.isEmpty()) {
+                Text("Self transfer / No balance change", color = ColorTextDim, fontSize = 12.sp)
+            }
+            
             Spacer(Modifier.height(8.dp))
-            Text("TxID: ${trade.txId.take(12)}...${trade.txId.takeLast(12)}", color = ColorTextDim, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+            Text("TxID: ${trade.id.take(12)}...${trade.id.takeLast(12)}", color = ColorTextDim, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
         }
+    }
+    
+    if (showDetails) {
+        val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+        
+        AlertDialog(
+            onDismissRequest = { showDetails = false },
+            containerColor = ColorCard,
+            modifier = Modifier.fillMaxWidth(0.95f),
+            title = {
+                Text("Transaction Details", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                    item {
+                        Text("TxID:", color = ColorTextDim, fontSize = 12.sp)
+                        Text(trade.id, color = Color.White, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                        Spacer(Modifier.height(15.dp))
+                        
+                        // External Links
+                        Text("View on Explorer:", color = ColorAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(5.dp))
+                        
+                        Text(
+                            "Ergo Explorer", 
+                            color = ColorAccent, 
+                            fontSize = 12.sp, 
+                            modifier = Modifier.clickable { 
+                                uriHandler.openUri("https://explorer.ergoplatform.com/en/transactions/${trade.id}")
+                            }.padding(vertical = 4.dp)
+                        )
+                        Text(
+                            "ErgExplorer", 
+                            color = ColorAccent, 
+                            fontSize = 12.sp, 
+                            modifier = Modifier.clickable { 
+                                uriHandler.openUri("https://ergexplorer.com/transactions#${trade.id}")
+                            }.padding(vertical = 4.dp)
+                        )
+                        Text(
+                            "Sigmaspace.io", 
+                            color = ColorAccent, 
+                            fontSize = 12.sp, 
+                            modifier = Modifier.clickable { 
+                                uriHandler.openUri("https://sigmaspace.io/en/transaction/${trade.id}")
+                            }.padding(vertical = 4.dp)
+                        )
+                        
+                        Spacer(Modifier.height(15.dp))
+                    }
+                    
+                    item {
+                        Text("Status: ${if (trade.isConfirmed) "Confirmed (${trade.numConfirmations} confs)" else "Unconfirmed" }", color = Color.White, fontSize = 12.sp)
+                        Spacer(Modifier.height(10.dp))
+                    }
+                    
+                    item {
+                        Text("From:", color = ColorAccent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                    items(trade.inputs) { inp ->
+                        Column(modifier = Modifier.padding(vertical = 5.dp)) {
+                            val addr = if (inp.address.length > 20) inp.address.take(10) + "..." + inp.address.takeLast(10) else inp.address
+                            Text(addr, color = ColorTextDim, fontSize = 10.sp)
+                            Text("${String.format("%.4f", inp.value.toDouble() / 1_000_000_000.0)} ERG", color = Color.White, fontSize = 12.sp)
+                            inp.assets.forEach { map ->
+                                val tId = map["tokenId"] as? String ?: ""
+                                val amt = (map["amount"] as? Number)?.toLong() ?: 0L
+                                val tName = viewModel.getTokenName(tId)
+                                Text("${viewModel.formatBalance(tId, amt)} $tName", color = Color.White, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                    
+                    item {
+                        Spacer(Modifier.height(10.dp))
+                        Text("To:", color = ColorAccent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                    items(trade.outputs) { out ->
+                        Column(modifier = Modifier.padding(vertical = 5.dp)) {
+                            val addr = if (out.address.length > 20) out.address.take(10) + "..." + out.address.takeLast(10) else out.address
+                            Text(addr, color = ColorTextDim, fontSize = 10.sp)
+                            Text("${String.format("%.4f", out.value.toDouble() / 1_000_000_000.0)} ERG", color = Color.White, fontSize = 12.sp)
+                            out.assets.forEach { map ->
+                                val tId = map["tokenId"] as? String ?: ""
+                                val amt = (map["amount"] as? Number)?.toLong() ?: 0L
+                                val tName = viewModel.getTokenName(tId)
+                                Text("${viewModel.formatBalance(tId, amt)} $tName", color = Color.White, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDetails = false }) {
+                    Text("Close", color = ColorAccent)
+                }
+            }
+        )
     }
 }
 

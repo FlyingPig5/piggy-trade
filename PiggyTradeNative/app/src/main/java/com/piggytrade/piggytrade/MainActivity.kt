@@ -1,4 +1,10 @@
 package com.piggytrade.piggytrade
+import com.piggytrade.piggytrade.ui.theme.*
+import com.piggytrade.piggytrade.ui.common.*
+import com.piggytrade.piggytrade.ui.home.*
+import com.piggytrade.piggytrade.ui.swap.*
+import com.piggytrade.piggytrade.ui.wallet.*
+import com.piggytrade.piggytrade.ui.settings.*
 
 import android.os.Bundle
 import androidx.activity.compose.BackHandler
@@ -163,6 +169,10 @@ class MainActivity : FragmentActivity() {
                             getId = { it },
                             idLabel = "Addr: "
                         )
+                    }
+
+                    if (uiState.syncProgress != null) {
+                        SyncProgressPopup(uiState.syncProgress!!, onDismiss = { viewModel.dismissSyncPopup() })
                     }
                 }
             }

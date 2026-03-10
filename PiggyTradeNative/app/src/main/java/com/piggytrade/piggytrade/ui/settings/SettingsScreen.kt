@@ -1,4 +1,9 @@
-package com.piggytrade.piggytrade.ui
+package com.piggytrade.piggytrade.ui.settings
+import com.piggytrade.piggytrade.ui.theme.*
+import com.piggytrade.piggytrade.ui.common.*
+import com.piggytrade.piggytrade.ui.home.*
+import com.piggytrade.piggytrade.ui.swap.*
+import com.piggytrade.piggytrade.ui.wallet.*
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -28,6 +33,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.core.tween
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 
 @Composable
 fun SettingsScreen(
@@ -39,6 +46,28 @@ fun SettingsScreen(
     val uiState by viewModel.uiState.collectAsState()
     val scrollState = rememberScrollState()
     val context = androidx.compose.ui.platform.LocalContext.current
+
+    var showExportWarning by remember { mutableStateOf(false) }
+    var showImportConfirm by remember { mutableStateOf(false) }
+    var showSyncConfirm by remember { mutableStateOf(false) }
+    var pendingImportJson by remember { mutableStateOf("") }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri ->
+        uri?.let {
+            val contentResolver = context.contentResolver
+            try {
+                contentResolver.openInputStream(it)?.use { inputStream ->
+                    val json = inputStream.bufferedReader().readText()
+                    pendingImportJson = json
+                    showImportConfirm = true
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("Settings", "Failed to read file: ${e.message}")
+            }
+        }
+    }
 
     if (uiState.syncProgress != null) {
         SyncProgressPopup(uiState.syncProgress!!, onDismiss = { viewModel.dismissSyncPopup() })
@@ -121,32 +150,43 @@ fun SettingsScreen(
                             )
                     )
                 }
-                Text(
-                    text = "Ergo trading shouldn't be a desk job.\nSwap on the go!",
-                    color = ColorTextDim,
-                    fontSize = 10.sp, // FONT_SIZE_BASE
-                    textAlign = TextAlign.Center,
-                    lineHeight = 14.sp
-                )
-
-                // GitHub Link
-                TogaRow(
-                    modifier = Modifier
-                        .padding(top = 10.dp)
-                        .clickable { /* TODO open github */ }
-                        .padding(horizontal = 15.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(horizontal = 10.dp)
                 ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.github),
-                        contentDescription = "GitHub",
-                        modifier = Modifier.size(24.dp).padding(end = 10.dp)
-                    )
                     Text(
-                        text = "This app is open source!",
-                        color = Color.White,
-                        fontSize = 12.sp // FONT_SIZE_MD
+                        text = "Ergo trading shouldn't be a desk job.",
+                        color = Color.White.copy(alpha = 0.85f),
+                        fontSize = 13.sp,
+                        textAlign = TextAlign.Center
                     )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = "Swap on the go!",
+                            color = Color.White.copy(alpha = 0.85f),
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        
+                        Spacer(modifier = Modifier.width(6.dp))
+
+                        Image(
+                            painter = painterResource(id = R.drawable.github),
+                            contentDescription = "GitHub",
+                            modifier = Modifier
+                                .size(18.dp)
+                                .clickable { 
+                                    val intent = android.content.Intent(
+                                        android.content.Intent.ACTION_VIEW, 
+                                        android.net.Uri.parse("https://github.com/FlyingPig5/piggy-trade")
+                                    )
+                                    context.startActivity(intent)
+                                }
+                        )
+                    }
                 }
             }
 
@@ -223,26 +263,6 @@ fun SettingsScreen(
                 )
             }
 
-            // Debug Section
-            TogaRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 20.dp, start = 10.dp, end = 5.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Debug/Advanced",
-                    color = ColorText,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.weight(1f)
-                )
-                Switch(
-                    checked = uiState.debugMode,
-                    onCheckedChange = { viewModel.setDebugMode(it) },
-                    modifier = Modifier.scale(0.8f)
-                )
-            }
 
             TogaRow(
                 modifier = Modifier
@@ -286,56 +306,94 @@ fun SettingsScreen(
                 )
                 Text(text = "${uiState.numFavorites}", color = ColorText, fontSize = 12.sp, modifier = Modifier.width(30.dp))
             }
-
-
-            // Token Management Section
-            Text(
-                text = "TOKEN LIST MANAGEMENT",
-                color = ColorText,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(top = 20.dp, bottom = 10.dp, start = 10.dp)
-            )
-
-            Box(
+            TogaRow(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 10.dp, start = 10.dp, end = 5.dp)
-                    .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = ColorAccent)
-                    .clickable { viewModel.syncTokenList() }
-                    .padding(vertical = 12.dp),
-                contentAlignment = Alignment.Center
+                    .padding(top = 10.dp, start = 10.dp, end = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Check for new trading pairs", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "Advanced",
+                    color = ColorText,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = uiState.debugMode,
+                    onCheckedChange = { viewModel.setDebugMode(it) },
+                    modifier = Modifier.scale(0.8f)
+                )
             }
 
+
             if (uiState.debugMode) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 10.dp, start = 10.dp, end = 5.dp)
-                        .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = Color(0xFF24336B))
-                        .clickable { onNavigateToManagePairs() }
-                        .padding(vertical = 12.dp),
-                    contentAlignment = Alignment.Center
+                // Token Management Section
+                Text(
+                    text = "TOKEN LIST MANAGEMENT",
+                    color = ColorText,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 20.dp, bottom = 10.dp, start = 10.dp)
+                )
+
+                TogaRow(
+                    modifier = Modifier.fillMaxWidth().padding(start = 10.dp, end = 5.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("Manage Trading Pairs", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = Color(0xFF24336B))
+                            .clickable { 
+                                showSyncConfirm = true
+                            }
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("Manage Trading Pairs", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    }
                 }
 
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 10.dp, start = 10.dp, end = 5.dp)
-                        .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = Color(0xFF24336B))
-                        .clickable { viewModel.exportTokens(context) }
-                        .padding(vertical = 12.dp),
-                    contentAlignment = Alignment.Center
+                // Wallet Management Section
+                Text(
+                    text = "WALLET MANAGEMENT",
+                    color = ColorText,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 20.dp, bottom = 10.dp, start = 10.dp)
+                )
+
+                TogaRow(
+                    modifier = Modifier.fillMaxWidth().padding(start = 10.dp, end = 5.dp, bottom = 10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text("Export token list", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = Color(0xFF24336B))
+                            .clickable { showExportWarning = true }
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("Backup Wallets", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .androidBorder(radius = 10.dp, borderWidth = 0.dp, bgColor = Color(0xFF9E1F1F))
+                            .clickable { importLauncher.launch("*/*") }
+                            .padding(vertical = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("Restore Wallets", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
+            }
         }
-    }
-}
 
     // Animated Selector Overlay for Node Selection
     Box(modifier = Modifier.fillMaxSize()) {
@@ -380,6 +438,97 @@ fun SettingsScreen(
             }
         }
     }
-}
+
+    if (showSyncConfirm) {
+        AlertDialog(
+            onDismissRequest = { showSyncConfirm = false },
+            title = { Text("Sync Trading Pairs", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = { 
+                Text(
+                    "Do you want to sync with chain before managing pairs?",
+                    color = Color.White,
+                    fontSize = 16.sp
+                ) 
+            },
+            containerColor = ColorCard,
+            confirmButton = {
+                TextButton(onClick = {
+                    showSyncConfirm = false
+                    viewModel.syncTokenList()
+                    onNavigateToManagePairs()
+                }) {
+                    Text("YES", color = ColorAccent)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showSyncConfirm = false
+                    onNavigateToManagePairs()
+                }) {
+                    Text("NO", color = Color.White)
+                }
+            }
+        )
+    }
+
+    if (showExportWarning) {
+        AlertDialog(
+            onDismissRequest = { showExportWarning = false },
+            title = { Text("SECURITY WARNING", color = Color.Red, fontWeight = FontWeight.ExtraBold) },
+            text = { 
+                Text(
+                    "This will export all your wallets including encrypted mnemonics.\n\n" +
+                    "IMPORTANT: Wallets secured with Biometrics are encrypted with a device-specific key. " +
+                    "They can only be restored on THIS device. For other devices, use the original mnemonic.\n\n" +
+                    "Even though they are encrypted, you MUST store this backup file securely.",
+                    color = Color.White,
+                    fontSize = 16.sp
+                ) 
+            },
+            containerColor = ColorCard,
+            confirmButton = {
+                TextButton(onClick = {
+                    showExportWarning = false
+                    viewModel.exportWallets(context)
+                }) {
+                    Text("I UNDERSTAND", color = ColorAccent)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExportWarning = false }) {
+                    Text("Cancel", color = Color.White)
+                }
+            }
+        )
+    }
+
+    if (showImportConfirm) {
+        AlertDialog(
+            onDismissRequest = { showImportConfirm = false },
+            title = { Text("Overwrite Wallets?", color = Color.White) },
+            text = { 
+                Text(
+                    "Importing wallets will OVERWRITE all current wallets on this device.\n\n" +
+                    "Are you sure you want to proceed?",
+                    color = Color.White
+                ) 
+            },
+            containerColor = ColorCard,
+            confirmButton = {
+                TextButton(onClick = {
+                    showImportConfirm = false
+                    viewModel.importWallets(pendingImportJson)
+                }) {
+                    Text("OVERWRITE", color = Color.Red)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showImportConfirm = false }) {
+                    Text("Cancel", color = Color.White)
+                }
+            }
+        )
+    }
 }
 
+}

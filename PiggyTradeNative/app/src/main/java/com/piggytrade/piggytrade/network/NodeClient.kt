@@ -71,6 +71,26 @@ interface ErgoNodeApi {
 
     @POST("/blockchain/tokens")
     suspend fun getTokensInfo(@Body tokenIds: List<String>): List<Map<String, Any>>
+
+    @POST("/blockchain/transaction/byAddress")
+    suspend fun getTransactionsByAddress(
+        @Query("offset") offset: Int,
+        @Query("limit") limit: Int,
+        @Body address: RequestBody
+    ): Map<String, @JvmSuppressWildcards Any>
+
+    @POST("/transactions/unconfirmed/byErgoTree")
+    suspend fun getUnconfirmedTransactionsByErgoTree(
+        @Query("offset") offset: Int,
+        @Query("limit") limit: Int,
+        @Body ergoTree: RequestBody
+    ): List<Map<String, @JvmSuppressWildcards Any>>
+
+    @GET("/utils/ergoTreeToAddress/{ergoTree}")
+    suspend fun ergoTreeToAddress(@Path("ergoTree") ergoTree: String): Map<String, @JvmSuppressWildcards Any>
+
+    @GET("/utils/addressToErgoTree/{address}")
+    suspend fun addressToErgoTree(@Path("address") address: String): Map<String, @JvmSuppressWildcards Any>
 }
 
 class NodeClient(private val nodeUrl: String) {

@@ -1,4 +1,9 @@
-package com.piggytrade.piggytrade.ui
+package com.piggytrade.piggytrade.ui.theme
+import com.piggytrade.piggytrade.ui.common.*
+import com.piggytrade.piggytrade.ui.home.*
+import com.piggytrade.piggytrade.ui.swap.*
+import com.piggytrade.piggytrade.ui.wallet.*
+import com.piggytrade.piggytrade.ui.settings.*
 
 import androidx.compose.ui.graphics.Color
 
@@ -18,3 +23,4 @@ val ColorBlue = Color(0xFF58A6FF)
 val ColorIcon = Color(0xFFF0F6FC)
 val ColorOrange = Color(0xFFFF8C00)
 val ColorTextDim = Color(0xFF8B949E)
+val ColorPink = Color(0xFFFF69B4) // Added Pig Colore

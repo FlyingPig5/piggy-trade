@@ -1,4 +1,9 @@
-package com.piggytrade.piggytrade.ui
+package com.piggytrade.piggytrade.ui.swap
+import com.piggytrade.piggytrade.ui.theme.*
+import com.piggytrade.piggytrade.ui.common.*
+import com.piggytrade.piggytrade.ui.home.*
+import com.piggytrade.piggytrade.ui.wallet.*
+import com.piggytrade.piggytrade.ui.settings.*
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
@@ -145,7 +150,7 @@ fun ManagePairsScreen(
                 Spacer(modifier = Modifier.width(1.dp)) // Space for virtual divider
                 Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "Discovered",
+                        text = "All Pairs",
                         color = ColorOrange,
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Bold
@@ -249,7 +254,7 @@ fun ManagePairsScreen(
                     val filteredDiscovered = filterMappings(uiState.discoveredPools, discoveredSearchQuery)
 
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
-                        items(filteredDiscovered) { item ->
+                        items(filteredDiscovered, key = { it.key }) { item ->
                             DraggableMappingItem(
                                 mapping = item,
                                 vm = viewModel,
@@ -395,7 +400,7 @@ fun MappingColumn(
         }
 
         LazyColumn(modifier = Modifier.fillMaxSize()) {
-            items(items) { item ->
+            items(items, key = { it.key }) { item ->
                 MappingItemWithActions(item, vm, onRemove)
             }
         }

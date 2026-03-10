@@ -1,4 +1,9 @@
-package com.piggytrade.piggytrade.ui
+package com.piggytrade.piggytrade.ui.common
+import com.piggytrade.piggytrade.ui.theme.*
+import com.piggytrade.piggytrade.ui.home.*
+import com.piggytrade.piggytrade.ui.swap.*
+import com.piggytrade.piggytrade.ui.wallet.*
+import com.piggytrade.piggytrade.ui.settings.*
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -18,8 +23,13 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import androidx.compose.material3.*
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material.ripple.rememberRipple
+import androidx.compose.ui.platform.LocalContext
+import coil.request.ImageRequest
 
 @Composable
 fun SyncProgressPopup(progress: SyncProgress, onDismiss: () -> Unit) {
@@ -59,33 +69,44 @@ fun SyncProgressPopup(progress: SyncProgress, onDismiss: () -> Unit) {
                     } else {
                         // Processing boxes phase: progress bar
                         LinearProgressIndicator(
-                            progress = if (progress.total > 0) progress.current.toFloat() / progress.total.toFloat() else 0f,
+                            progress = { if (progress.total > 0) progress.current.toFloat() / progress.total.toFloat() else 0f },
                             modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp),
                             color = ColorAccent,
                             trackColor = ColorInputBg
                         )
-                        val batchText = if (progress.batchInfo.isNotEmpty()) "\n${progress.batchInfo}" else ""
-                        Text(
-                            "Processed ${progress.current} of ${progress.total} boxes$batchText", 
-                            color = ColorTextDim,
-                            fontSize = 12.sp
-                        )
+                        if (progress.isFirstLaunch) {
+                            Text(
+                                "Processed ${progress.current} of ${progress.total} boxes", 
+                                color = ColorTextDim,
+                                fontSize = 12.sp
+                            )
+                        }
                     }
                     
                     if (progress.newTokens.isNotEmpty()) {
                         Text(
-                            "New pairs found: ${progress.newTokens.size}", 
+                            "New pairs discovered: ${progress.newTokens.size}", 
                             color = ColorAccent, 
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(top = 5.dp)
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 8.dp)
                         )
                     }
                 } else {
                     Text(
-                        "Sync finished! Processed ${progress.total} boxes.", 
-                        color = ColorText,
-                        fontSize = 14.sp
+                        if (progress.newTokens.isEmpty()) "No new pairs found." else "Found ${progress.newTokens.size} new trading pairs!", 
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
                     )
+                    if (progress.isFirstLaunch) {
+                         Text(
+                            "Processed ${progress.total} boxes.", 
+                            color = ColorTextDim,
+                            fontSize = 11.sp,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
                         "${progress.newTokens.size} new pairs added:", 
@@ -186,9 +207,9 @@ fun TradeCard(
     TogaColumn(
         modifier = modifier
             .fillMaxWidth()
-            .padding(start = 10.dp, end = 10.dp, top = 2.dp, bottom = 10.dp) // margin=10, margin_top=2
+            .padding(start = 10.dp, end = 10.dp, top = 0.dp, bottom = 10.dp) // margin_top = 0
             .androidBorder(radius = 15.dp, borderWidth = 0.dp, bgColor = ColorCard)
-            .padding(top = 20.dp, bottom = 15.dp) // padding_top=20, v_padding applied to top/bottom
+            .padding(top = 10.dp, bottom = 10.dp) // internal padding reduced
     ) {
         content()
     }
@@ -202,9 +223,9 @@ fun WalletCard(content: @Composable ColumnScope.() -> Unit) {
     TogaColumn(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = 10.dp, end = 10.dp, top = 10.dp, bottom = 2.dp)
+            .padding(start = 10.dp, end = 10.dp, top = 2.dp, bottom = 2.dp)
             .androidBorder(radius = 15.dp, borderWidth = 0.dp, bgColor = ColorCard)
-            .padding(vertical = 15.dp)
+            .padding(vertical = 10.dp)
     ) {
         content()
     }
@@ -259,10 +280,32 @@ fun TokenImage(
     // Some hexes might be uppercase in the state, but files are lowercase
     val finalFileName = fileName.lowercase()
     
-    val assetPath = "file:///android_asset/token_logos/$finalFileName.png"
-    AsyncImage(
-        model = assetPath,
-        contentDescription = contentDescription,
-        modifier = modifier
-    )
+    var currentModel by remember(finalFileName) { 
+        mutableStateOf<Any>("file:///android_asset/token_logos/$finalFileName.svg") 
+    }
+    
+    val isFallback = currentModel == "FALLBACK"
+
+    if (isFallback) {
+        Text(
+            text = "\uF0042", // mdi-block-helper
+            fontFamily = MaterialDesignIcons,
+            fontSize = 20.sp, // Reasonable default for a logo
+            color = Color.White.copy(alpha = 0.3f),
+            modifier = modifier
+        )
+    } else {
+        AsyncImage(
+            model = currentModel,
+            contentDescription = contentDescription,
+            modifier = modifier,
+            onError = {
+                if (currentModel == "file:///android_asset/token_logos/$finalFileName.svg") {
+                    currentModel = "file:///android_asset/token_logos/$finalFileName.png"
+                } else {
+                    currentModel = "FALLBACK"
+                }
+            }
+        )
+    }
 }

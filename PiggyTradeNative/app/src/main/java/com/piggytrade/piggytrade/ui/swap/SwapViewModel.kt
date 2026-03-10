@@ -1,4 +1,9 @@
-package com.piggytrade.piggytrade.ui
+package com.piggytrade.piggytrade.ui.swap
+import com.piggytrade.piggytrade.ui.theme.*
+import com.piggytrade.piggytrade.ui.common.*
+import com.piggytrade.piggytrade.ui.home.*
+import com.piggytrade.piggytrade.ui.wallet.*
+import com.piggytrade.piggytrade.ui.settings.*
 
 import android.app.Application
 import android.util.Base64
@@ -7,6 +12,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.piggytrade.piggytrade.blockchain.Trader
 import com.piggytrade.piggytrade.blockchain.TxBuilder
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
+import com.piggytrade.piggytrade.protocol.NetworkConfig
 import com.piggytrade.piggytrade.data.PreferenceManager
 import com.piggytrade.piggytrade.data.TokenRepository
 import com.piggytrade.piggytrade.network.NodeClient
@@ -28,6 +36,7 @@ data class SwapState(
     val fromAmount: String = "",
     val toQuote: String = "--",
     val priceImpact: Double = 0.0,
+    val lpFee: Double = 0.0,
     val isLoadingQuote: Boolean = false,
     val isSimulation: Boolean = false,
     val minerFee: Double = 0.001,
@@ -56,7 +65,9 @@ data class SwapState(
     val reviewParams: ReviewParams? = null,
     val txSuccessData: TxSuccessData? = null,
     val includeUnconfirmed: Boolean = true,
-    val trades: List<TradeHistoryItem> = emptyList(),
+    val networkTrades: List<NetworkTransaction> = emptyList(),
+    val historyOffset: Int = 0,
+    val isLoadingHistory: Boolean = false,
     val syncProgress: SyncProgress? = null,
     val whitelistedPools: List<PoolMapping> = emptyList(),
     val discoveredPools: List<PoolMapping> = emptyList(),
@@ -99,13 +110,24 @@ data class TxSuccessData(
     val sigmaspaceUrl: String
 )
 
-data class TradeHistoryItem(
-    val timestamp: String,
-    val buy: String,
-    val pay: String,
-    val txId: String,
-    val isSimulation: Boolean,
-    val address: String
+data class TxBox(
+    val boxId: String,
+    val value: Long,
+    val address: String,
+    val assets: List<Map<String, Any>>
+)
+
+data class NetworkTransaction(
+    val id: String,
+    val timestamp: Long,
+    val isConfirmed: Boolean,
+    val netErgChange: Long,
+    val netTokenChanges: Map<String, Long>,
+    val inputs: List<TxBox>,
+    val outputs: List<TxBox>,
+    val inclusionHeight: Int?,
+    val numConfirmations: Int?,
+    val label: String? = null
 )
 
 data class ReviewParams(
@@ -181,17 +203,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 selectedAddress = initialAddress,
                 favorites = favorites,
                 includeUnconfirmed = (preferenceManager.loadSettings()["include_unconfirmed"] as? Boolean) ?: true,
-                numFavorites = numFavs,
-                trades = preferenceManager.loadTrades().map {
-                    TradeHistoryItem(
-                        timestamp = it["timestamp"] as? String ?: "",
-                        buy = it["buy"] as? String ?: "",
-                        pay = it["pay"] as? String ?: "",
-                        txId = it["txId"] as? String ?: "",
-                        isSimulation = it["isSimulation"] as? Boolean ?: false,
-                        address = it["address"] as? String ?: ""
-                    )
-                }
+                numFavorites = numFavs
             )
         )
     }
@@ -282,11 +294,19 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         val fAsset = getTokenId(current.fromAsset)
         val tAsset = getTokenId(current.toAsset)
         
-        val fBal = if (fAsset == "ERG") String.format("%.4f", walletErg) 
-                   else formatBalance(fAsset, walletTokens[fAsset] ?: 0L)
+        val fBal = if (fAsset == "ERG") {
+            if (walletErg > 0.0) String.format("%.4f", walletErg) else ""
+        } else {
+            val amt = walletTokens[fAsset] ?: 0L
+            if (amt > 0L) formatBalance(fAsset, amt) else ""
+        }
         
-        val tBal = if (tAsset == "ERG") String.format("%.4f", walletErg)
-                   else formatBalance(tAsset, walletTokens[tAsset] ?: 0L)
+        val tBal = if (tAsset == "ERG") {
+            if (walletErg > 0.0) String.format("%.4f", walletErg) else ""
+        } else {
+            val amt = walletTokens[tAsset] ?: 0L
+            if (amt > 0L) formatBalance(tAsset, amt) else ""
+        }
         
         _uiState.value = current.copy(fromBalance = fBal, toBalance = tBal)
     }
@@ -295,10 +315,11 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         val id = getTokenId(name)
         val current = _uiState.value
         if (id == "ERG") {
-            if (current.walletErgBalance > 0) return String.format("%.4f", current.walletErgBalance)
-            return null
+            if (current.walletErgBalance <= 0.0) return null
+            return String.format("%.4f", current.walletErgBalance)
         }
-        val amount = current.walletTokens[id] ?: return null
+        val amount = current.walletTokens[id] ?: 0L
+        if (amount <= 0L) return null
         return formatBalance(id, amount)
     }
 
@@ -361,6 +382,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     fun setSelectedAddress(addr: String) {
         _uiState.value = _uiState.value.copy(selectedAddress = addr)
         fetchWalletBalances()
+        fetchTransactionHistory()
     }
 
     fun setDebugMode(debug: Boolean) {
@@ -503,10 +525,13 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 )
 
                 if (useBiometrics) {
-                    walletData["use_biometrics"] = true
-                    // Store plaintext temporarily - biometric encryption happens at sign time
-                    walletData["mnemonic_plain"] = mnemonic
-                } else if (password != null) {
+                walletData["use_biometrics"] = true
+                try {
+                    walletData["mnemonic_encrypted_device"] = com.piggytrade.piggytrade.crypto.DeviceEncryption.encrypt(mnemonic)
+                } catch (e: Exception) {
+                    android.util.Log.e("SaveWallet", "Device encryption failed: ${e.message}")
+                }
+            } else if (password != null) {
                     try {
                         val encrypted = com.piggytrade.piggytrade.crypto.MnemonicEncryption.encrypt(mnemonic, password)
                         walletData["salt"] = encrypted.salt
@@ -539,6 +564,10 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     selectedAddress = finalAddress
                 )
                 preferenceManager.selectedWallet = name
+                
+                // Immediately fetch data for the new wallet
+                fetchWalletBalances()
+                fetchTransactionHistory()
             }
         }
     }
@@ -603,6 +632,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 preferenceManager.selectedWallet = internalKey
                 fetchWalletBalances()
                 updateBalances()
+                fetchTransactionHistory()
             }
             "node" -> {
                 val index = current.nodes.indexOf(item)
@@ -677,7 +707,8 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun fetchQuote() {
         val current = _uiState.value
-        val amount = current.fromAmount.toDoubleOrNull() ?: 0.0
+        val amountStr = current.fromAmount.replace(",", ".")
+        val amount = amountStr.toDoubleOrNull() ?: 0.0
 
         if (amount <= 0.0 || current.fromAsset.isEmpty() || current.toAsset.isEmpty()) {
             _uiState.value = _uiState.value.copy(toQuote = "--", priceImpact = 0.0)
@@ -699,13 +730,15 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                         poolType = route.poolType,
                         checkMempool = current.includeUnconfirmed
                     )
-                    withContext(kotlinx.coroutines.Dispatchers.Main) {
-                        _uiState.value = _uiState.value.copy(
-                            isLoadingQuote = false,
-                            toQuote = quote,
-                            priceImpact = impact
-                        )
-                    }
+                        val lpFee = (tokenRepository.tokens[route.tokenKey]?.get("fee") as? Number)?.toDouble() ?: 0.0
+                        withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            _uiState.value = _uiState.value.copy(
+                                isLoadingQuote = false,
+                                toQuote = quote,
+                                priceImpact = impact,
+                                lpFee = lpFee
+                            )
+                        }
                 } else {
                     withContext(kotlinx.coroutines.Dispatchers.Main) {
                         _uiState.value = _uiState.value.copy(
@@ -777,9 +810,12 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         val pairName2 = "$assetB-$assetA"
         return tokenRepository.tokens.containsKey(pairName1) || tokenRepository.tokens.containsKey(pairName2)
     }
-
+    
     fun getTokenId(name: String): String {
         if (name == "ERG") return "ERG"
+        if (name.equals("USE", ignoreCase = true)) return (com.piggytrade.piggytrade.protocol.NetworkConfig.USE_CONFIG["id"] as? String) ?: name
+        if (name.equals("DexyGold", ignoreCase = true)) return (com.piggytrade.piggytrade.protocol.NetworkConfig.DEXYGOLD_CONFIG["id"] as? String) ?: name
+        
         if (name.length >= 64 && name.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }) return name
         
         tokenRepository.tokens.forEach { (tName, data) ->
@@ -929,11 +965,12 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 // Decrypt mnemonic
-                val useBiometrics = walletData["use_biometrics"] as? Boolean ?: false
-                val mnemonic = if (useBiometrics) {
-                    walletData["mnemonic_plain"] as? String 
-                        ?: throw Exception("Biometric signing without plain mnemonic currently unsupported")
-                } else {
+            val useBiometrics = walletData["use_biometrics"] as? Boolean ?: false
+            val mnemonic = if (useBiometrics) {
+                val encrypted = walletData["mnemonic_encrypted_device"] as? String
+                    ?: throw Exception("Missing biometric encrypted mnemonic")
+                com.piggytrade.piggytrade.crypto.DeviceEncryption.decrypt(encrypted)
+            } else {
                     val salt = walletData["salt"] as? String ?: throw Exception("Missing salt")
                     val token = walletData["token"] as? String ?: throw Exception("Missing token")
                     com.piggytrade.piggytrade.crypto.MnemonicEncryption.decrypt(
@@ -967,42 +1004,23 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 // Success
-                val sdf = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault())
-                val timestamp = sdf.format(Date())
-                
-                val newTrade = TradeHistoryItem(
-                    timestamp = timestamp,
-                    buy = "${current.reviewParams?.buyAmount} ${current.reviewParams?.buyToken}",
-                    pay = "${current.reviewParams?.payAmount} ${current.reviewParams?.payToken}",
-                    txId = txId,
-                    isSimulation = current.isSimulation,
-                    address = current.selectedAddress
-                )
-                
-                val updatedTrades = current.trades + newTrade
                 _uiState.value = current.copy(
-                    trades = updatedTrades,
                     txSuccessData = TxSuccessData(
                         txId = txId,
                         isSimulation = current.isSimulation,
                         sigmaspaceUrl = "https://sigmaspace.io/tx/$txId"
                     )
                 )
-                
-                // Persist trades
-                preferenceManager.saveTrades(updatedTrades.map {
-                    mapOf(
-                        "timestamp" to it.timestamp,
-                        "buy" to it.buy,
-                        "pay" to it.pay,
-                        "txId" to it.txId,
-                        "isSimulation" to it.isSimulation,
-                        "address" to it.address
-                    )
-                })
 
                 withContext(kotlinx.coroutines.Dispatchers.Main) {
                     onSuccess(txId)
+                    
+                    // Resync after 0.2 seconds to fetch unconfirmed balances/history
+                    launch {
+                        kotlinx.coroutines.delay(200)
+                        fetchWalletBalances()
+                        fetchTransactionHistory()
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Signing or broadcast failed", e)
@@ -1064,23 +1082,6 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    fun exportTokens(context: android.content.Context) {
-        val ergToToken = tokenRepository.getErgToTokenJson()
-        val tokenToToken = tokenRepository.getTokenToTokenJson()
-        
-        val combined = "--- ERG to Token ---\n$ergToToken\n\n--- Token to Token ---\n$tokenToToken"
-        
-        val sendIntent: android.content.Intent = android.content.Intent().apply {
-            action = android.content.Intent.ACTION_SEND
-            putExtra(android.content.Intent.EXTRA_TEXT, combined)
-            type = "text/plain"
-        }
-        
-        val shareIntent = android.content.Intent.createChooser(sendIntent, "Export Tokens JSON")
-        shareIntent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(shareIntent)
-    }
-
     private fun hasUserFunds(mapping: PoolMapping): Boolean {
         val ui = _uiState.value
         val data = mapping.data
@@ -1106,8 +1107,10 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             
             // Find existing liquidity in state to avoid re-fetching or resetting to "Fetching..."
             val existingState = _uiState.value
-            val existingLiq = (existingState.whitelistedPools + existingState.discoveredPools)
-                .find { it.pid == pid }?.liquidity ?: "Fetching..."
+            val existingPools = existingState.whitelistedPools + existingState.discoveredPools
+            val existingLiq = existingPools.find { it.key == key }?.liquidity 
+                           ?: existingPools.find { it.pid == pid && pid.isNotEmpty() }?.liquidity 
+                           ?: "Fetching..."
 
             val displayName = if (data.containsKey("id_in")) {
                 val nameIn = data["name_in"] as? String ?: key.split("-").firstOrNull() ?: ""
@@ -1160,9 +1163,15 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         }
         
         val finalTokens = mutableListOf<String>()
-        finalTokens.add("ERG")
-        finalTokens.addAll(tokensWithBalance.sorted())
-        finalTokens.addAll(tokensWithoutBalance.sorted())
+        if (_uiState.value.walletErgBalance > 0.0) {
+            finalTokens.add("ERG")
+            finalTokens.addAll(tokensWithBalance.sorted())
+            finalTokens.addAll(tokensWithoutBalance.sorted())
+        } else {
+            finalTokens.addAll(tokensWithBalance.sorted())
+            finalTokens.add("ERG") // ERG still high but after balanced tokens
+            finalTokens.addAll(tokensWithoutBalance.sorted())
+        }
 
         _uiState.value = _uiState.value.copy(
             whitelistedPools = whitelistedArr.sortedWith(sortComparator),
@@ -1281,14 +1290,239 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 
                 loadPoolMappings(fetchLiquidity = false)
+                fetchWalletBalances() // Refresh balances for newly whitelisted token
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to save whitelist change", e)
             }
         }
     }
 
+    fun fetchTransactionHistory(loadMore: Boolean = false) {
+        val address = _uiState.value.selectedAddress
+        if (address.isEmpty()) return
+
+        if (loadMore) {
+            if (_uiState.value.isLoadingHistory) return
+        } else {
+            _uiState.value = _uiState.value.copy(networkTrades = emptyList(), historyOffset = 0)
+        }
+        _uiState.value = _uiState.value.copy(isLoadingHistory = true)
+
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val client = nodeClient ?: return@launch
+                val currentOffset = if (loadMore) _uiState.value.historyOffset else 0
+                val limit = 50
+
+                val newTrades = mutableListOf<NetworkTransaction>()
+
+                // Only fetch unconfirmed if it's the first page
+                if (currentOffset == 0) {
+                    try {
+                        val treeRes = client.api.addressToErgoTree(address)
+                        val ergoTree = (treeRes["ergoTree"] as? String) ?: (treeRes["tree"] as? String) ?: ""
+                        if (ergoTree.isNotEmpty()) {
+                            val reqBody = "\"$ergoTree\"".toRequestBody("application/json".toMediaTypeOrNull())
+                            val unconfList = client.api.getUnconfirmedTransactionsByErgoTree(
+                                offset = 0, limit = 50, ergoTree = reqBody
+                            )
+                            newTrades.addAll(parseNetworkTransactions(unconfList, address, false))
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed fetching unconfirmed", e)
+                    }
+                }
+
+                // Fetch Confirmed
+                try {
+                    val reqBody = "\"$address\"".toRequestBody("application/json".toMediaTypeOrNull())
+                    val confResp = client.api.getTransactionsByAddress(
+                        offset = currentOffset, limit = limit, address = reqBody
+                    )
+                    @Suppress("UNCHECKED_CAST")
+                    val confList = confResp["items"] as? List<Map<String, Any>> ?: emptyList()
+                    newTrades.addAll(parseNetworkTransactions(confList, address, true))
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed fetching confirmed", e)
+                }
+
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    val currentList = if (loadMore) _uiState.value.networkTrades else emptyList()
+                    
+                    // Filter out duplicates (sometimes unconfirmed gets confirmed while we page)
+                    val finalTrades = (currentList + newTrades).distinctBy { it.id }
+
+                    _uiState.value = _uiState.value.copy(
+                        networkTrades = finalTrades,
+                        historyOffset = currentOffset + limit,
+                        isLoadingHistory = false
+                    )
+                }
+            } catch (e: Exception) {
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(isLoadingHistory = false)
+                }
+            }
+        }
+    }
+
+    private fun parseNetworkTransactions(
+        rawList: List<Map<String, Any>>, 
+        myAddress: String, 
+        isConfirmed: Boolean
+    ): List<NetworkTransaction> {
+        val parsed = mutableListOf<NetworkTransaction>()
+
+        for (tx in rawList) {
+            val id = tx["id"] as? String ?: continue
+            val timestamp = (tx["timestamp"] as? Number)?.toLong() ?: System.currentTimeMillis()
+            val inclusionHeight = (tx["inclusionHeight"] as? Number)?.toInt()
+            val numConfirmations = (tx["numConfirmations"] as? Number)?.toInt()
+
+            @Suppress("UNCHECKED_CAST")
+            val rawInputs = tx["inputs"] as? List<Map<String, Any>> ?: emptyList()
+            @Suppress("UNCHECKED_CAST")
+            val rawOutputs = tx["outputs"] as? List<Map<String, Any>> ?: emptyList()
+
+            val parsedInputs = mutableListOf<TxBox>()
+            var myErgIn = 0L
+            val myTokensIn = mutableMapOf<String, Long>()
+
+            for (inp in rawInputs) {
+                val boxId = inp["boxId"] as? String ?: ""
+                val value = (inp["value"] as? Number)?.toLong() ?: 0L
+                val addr = inp["address"] as? String ?: ""
+                @Suppress("UNCHECKED_CAST")
+                val assets = inp["assets"] as? List<Map<String, Any>> ?: emptyList()
+                parsedInputs.add(TxBox(boxId, value, addr, assets))
+
+                if (addr == myAddress) {
+                    myErgIn += value
+                    for (asset in assets) {
+                        val tokenId = asset["tokenId"] as? String ?: continue
+                        val amount = (asset["amount"] as? Number)?.toLong() ?: 0L
+                        myTokensIn[tokenId] = myTokensIn.getOrDefault(tokenId, 0L) + amount
+                    }
+                }
+            }
+
+            val parsedOutputs = mutableListOf<TxBox>()
+            var myErgOut = 0L
+            val myTokensOut = mutableMapOf<String, Long>()
+
+            for (outp in rawOutputs) {
+                val boxId = outp["boxId"] as? String ?: ""
+                val value = (outp["value"] as? Number)?.toLong() ?: 0L
+                val addr = outp["address"] as? String ?: ""
+                @Suppress("UNCHECKED_CAST")
+                val assets = outp["assets"] as? List<Map<String, Any>> ?: emptyList()
+                parsedOutputs.add(TxBox(boxId, value, addr, assets))
+
+                if (addr == myAddress) {
+                    myErgOut += value
+                    for (asset in assets) {
+                        val tokenId = asset["tokenId"] as? String ?: continue
+                        val amount = (asset["amount"] as? Number)?.toLong() ?: 0L
+                        myTokensOut[tokenId] = myTokensOut.getOrDefault(tokenId, 0L) + amount
+                    }
+                }
+            }
+
+            val netErgChange = myErgOut - myErgIn
+            val netTokenChanges = mutableMapOf<String, Long>()
+            val allTokenIds = myTokensIn.keys + myTokensOut.keys
+            for (tid in allTokenIds) {
+                val net = (myTokensOut[tid] ?: 0L) - (myTokensIn[tid] ?: 0L)
+                if (net != 0L) {
+                    netTokenChanges[tid] = net
+                }
+            }
+
+            // Identify known protocols
+            var protocolLabel: String? = null
+            for (box in parsedInputs + parsedOutputs) {
+                // Use prefix match so we can catch Duckpools and other dynamic addresses
+                val match = NetworkConfig.KNOWN_PROTOCOLS.entries.find { box.address.startsWith(it.key) }
+                if (match != null) {
+                    protocolLabel = match.value
+                    break
+                }
+            }
+
+            // Only add if it actually affects our address
+            if (myErgIn > 0 || myErgOut > 0 || netTokenChanges.isNotEmpty()) {
+                parsed.add(NetworkTransaction(
+                    id = id,
+                    timestamp = timestamp,
+                    isConfirmed = isConfirmed,
+                    netErgChange = netErgChange,
+                    netTokenChanges = netTokenChanges,
+                    inputs = parsedInputs,
+                    outputs = parsedOutputs,
+                    inclusionHeight = inclusionHeight,
+                    numConfirmations = numConfirmations,
+                    label = protocolLabel
+                ))
+            }
+        }
+        return parsed
+    }
+
     fun resetTokenData() {
         tokenRepository.resetTokenData()
-        loadPoolMappings()
+        loadPoolMappings(fetchLiquidity = false)
+        syncTokenList(isFirstLaunch = true) // Resync immediately
+    }
+
+    fun exportWallets(context: Context) {
+        val wallets = preferenceManager.loadWallets()
+        val json = com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(wallets)
+        
+        val sendIntent: Intent = Intent().apply {
+            action = Intent.ACTION_SEND
+            putExtra(Intent.EXTRA_TEXT, json)
+            type = "text/plain"
+        }
+        
+        val shareIntent = Intent.createChooser(sendIntent, "Export Wallets JSON")
+        shareIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(shareIntent)
+    }
+
+    fun importWallets(json: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val type = object : com.google.gson.reflect.TypeToken<Map<String, Any>>() {}.type
+                val wallets: Map<String, Any> = com.google.gson.Gson().fromJson(json, type)
+                
+                preferenceManager.saveWallets(wallets)
+                
+                // Refresh UI
+                val displayWallets = mutableListOf<String>()
+                @Suppress("UNCHECKED_CAST")
+                wallets.forEach { (wname, data) ->
+                    val wtype = (data as? Map<String, Any>)?.get("type") == "ergopay"
+                    if (wtype) displayWallets.add("$wname (Ergopay)") else displayWallets.add(wname)
+                }
+                if (!displayWallets.contains("ErgoPay")) displayWallets.add("ErgoPay")
+
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(wallets = displayWallets)
+                    // If no wallet is selected, select the first one if available
+                    if (_uiState.value.selectedWallet.isEmpty() || _uiState.value.selectedWallet == "Select Wallet") {
+                        val firstWallet = wallets.keys.firstOrNull()
+                        if (firstWallet != null) {
+                            finalizeSelection(firstWallet)
+                        }
+                    } else {
+                        // Refresh current wallet data in case it changed
+                        fetchWalletBalances()
+                        fetchTransactionHistory()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("ImportWallets", "Failed to import: ${e.message}")
+            }
+        }
     }
 }
