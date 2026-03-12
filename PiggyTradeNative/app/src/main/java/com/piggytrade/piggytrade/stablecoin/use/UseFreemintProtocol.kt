@@ -199,7 +199,7 @@ class UseFreemintProtocol : StablecoinProtocol {
             // Output 0: Freemint box (preserved, updated registers)
             mapOf(
                 "address" to UseConfig.FREEMINT_ADDRESS,
-                "value" to UseConfig.FREEMINT_BOX_VALUE_NANO,
+                "value" to state.freemintNanoErg,  // must be >= SELF.value per contract
                 "assets" to listOf(mapOf("tokenId" to UseConfig.FREEMINT_NFT, "amount" to 1L)),
                 "registers" to mapOf("R4" to resetHeightVlq, "R5" to newAvailableVlq),
                 "creationHeight" to height

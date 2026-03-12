@@ -298,10 +298,13 @@ class ErgoSigner(private val nodeUrl: String) {
         
         // Use input_boxes from txDict or fallback to empty
         val inputBoxes = txDict["input_boxes"] as? List<Map<String, Any>> ?: emptyList()
-        val inputsJsonList = inputBoxes.map { box ->
+        @Suppress("UNCHECKED_CAST")
+        val contextExtensions = txDict["context_extensions"] as? Map<String, Map<String, String>> ?: emptyMap()
+        val inputsJsonList = inputBoxes.mapIndexed { index, box ->
+            val ext = contextExtensions[index.toString()] ?: emptyMap()
             mapOf(
                 "boxId" to (box["boxId"] as? String ?: ""),
-                "extension" to emptyMap<String, Any>()
+                "extension" to ext
             )
         }
 

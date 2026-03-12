@@ -119,7 +119,8 @@ data class SyncProgress(
 data class TxSuccessData(
     val txId: String,
     val isSimulation: Boolean,
-    val sigmaspaceUrl: String
+    val sigmaspaceUrl: String,
+    val signedTxJson: String = ""
 )
 
 data class TxBox(
@@ -1250,7 +1251,8 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     txSuccessData = TxSuccessData(
                         txId = txId,
                         isSimulation = current.isSimulation,
-                        sigmaspaceUrl = "https://sigmaspace.io/tx/$txId"
+                        sigmaspaceUrl = "https://sigmaspace.io/tx/$txId",
+                        signedTxJson = signedJson
                     )
                 )
 

@@ -355,6 +355,18 @@ fun ReviewTxScreen(
                             modifier = Modifier.clickable { uriHandler.openUri(data.sigmaspaceUrl) }
                         )
                     }
+                    if (uiState.debugMode && data.signedTxJson.isNotEmpty()) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "📋 Copy Signed TX JSON",
+                            color = ColorTextDim,
+                            fontSize = 13.sp,
+                            modifier = Modifier.clickable {
+                                clipboardManager.setText(AnnotatedString(data.signedTxJson))
+                                Toast.makeText(context, "Signed TX JSON copied", Toast.LENGTH_SHORT).show()
+                            }
+                        )
+                    }
                 }
             },
             confirmButton = {
