@@ -105,6 +105,9 @@ data class SwapState(
     val tokenUsdValues: Map<String, Double> = emptyMap(), // tokenId -> USD value of selling all on DEX
     val poolTrades: List<PoolTrade> = emptyList(),          // recent trades for selected token pair
     val isLoadingPoolTrades: Boolean = false,
+    val poolVolume24h: Double = 0.0,                         // ERG volume traded in last 24h
+    val poolVolume7d: Double = 0.0,                          // ERG volume traded in last 7 days
+    val tokenMarketData: List<com.piggytrade.piggytrade.data.OraclePriceStore.TokenMarketData> = emptyList(),
 
     // ─── ECOSYSTEM STATE ─────────────────────────────────────────────────
     val ecosystemTvl: Map<String, Double> = emptyMap(),       // protocol name -> ERG TVL
@@ -607,7 +610,6 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         val selectedAddrs = _uiState.value.selectedAddresses
         val fallbackAddress = _uiState.value.selectedAddress
         
-        // Determine which addresses to fetch
         val addressesToFetch = if (selectedAddrs.isNotEmpty()) selectedAddrs else {
             if (fallbackAddress.isEmpty()) return
             setOf(fallbackAddress)
@@ -2448,7 +2450,6 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 
                 preferenceManager.saveWallets(wallets)
                 
-                // Refresh UI
                 val displayWallets = mutableListOf<String>()
                 @Suppress("UNCHECKED_CAST")
                 wallets.forEach { (wname, data) ->
@@ -2503,7 +2504,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Sync oracle price data from chain on startup, then populate chart */
     fun syncOraclePrices() {
-        // Don't launch duplicate oracle syncs
+        // Guard: only block re-entry if oracle sync is actively running
         if (oracleSyncJob?.isActive == true) return
         oracleSyncJob = viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -2513,10 +2514,12 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 // 2. Show cached chart immediately so user sees data right away
                 fetchErgPrice()
 
-                // 3. Sync from chain in background — this takes time
+                // 3. Sync oracle data from chain — MUST complete before market sync
                 val client = nodeClient ?: return@launch
+                var oracleSyncDone = false
                 try {
                     oraclePriceStore.syncAll(client)
+                    oracleSyncDone = true
                 } catch (e: Exception) {
                     // If primary node fails, try pool
                     if (BuildConfig.DEBUG) Log.d(TAG, "Primary node sync failed, trying pool: ${e.message}")
@@ -2524,6 +2527,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                         nodePool.withRetry { poolClient ->
                             oraclePriceStore.syncAll(poolClient)
                         }
+                        oracleSyncDone = true
                     } catch (e2: Exception) {
                         if (BuildConfig.DEBUG) Log.d(TAG, "Pool sync also failed: ${e2.message}")
                     }
@@ -2531,6 +2535,45 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
                 // 4. Refresh chart with latest synced data
                 fetchErgPrice()
+
+                // 5. Background sync all whitelisted tokens for market data
+                //    ONLY if oracle sync completed successfully
+                if (!oracleSyncDone) {
+                    if (BuildConfig.DEBUG) Log.d(TAG, "Skipping market sync — oracle sync did not complete")
+                    return@launch
+                }
+
+                val allTokens = tokenRepository.getWhitelistedTokensWithPools()
+                if (allTokens.isNotEmpty()) {
+                    try {
+                        oraclePriceStore.syncAllTokens(nodePool, allTokens)
+                    } catch (e: Exception) {
+                        if (BuildConfig.DEBUG) Log.d(TAG, "All-token sync failed: ${e.message}")
+                    }
+                    _uiState.value = _uiState.value.copy(
+                        tokenMarketData = oraclePriceStore.allTokenMarketData
+                    )
+                }
+
+                // Watchdog: check whether the sync completed fully or stalled.
+                val prefs = getApplication<android.app.Application>()
+                    .getSharedPreferences("oracle_sync", android.content.Context.MODE_PRIVATE)
+                val resumeIdx = prefs.getInt("allTokenResumeIndex", 0)
+                val totalTokens = allTokens.size
+
+                if (resumeIdx in 1 until totalTokens) {
+                    // Sync stalled mid-way (node timeout/failure) — retry immediately
+                    if (BuildConfig.DEBUG) Log.d(TAG, "Market sync stalled at $resumeIdx/$totalTokens — retrying immediately")
+                    syncOraclePrices()
+                } else {
+                    // Sync completed fully — schedule a refresh in 30 min so data stays current
+                    // but we don't hammer the nodes on every foreground resume
+                    if (BuildConfig.DEBUG) Log.d(TAG, "Market sync complete — scheduling refresh in 30 min")
+                    viewModelScope.launch(Dispatchers.IO) {
+                        kotlinx.coroutines.delay(30 * 60 * 1000L)
+                        syncOraclePrices()
+                    }
+                }
             } catch (e: Exception) {
                 if (BuildConfig.DEBUG) Log.d(TAG, "Oracle sync failed: ${e.message}")
             }
@@ -2541,7 +2584,6 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.value = _uiState.value.copy(chartRange = range)
         val token = _uiState.value.selectedChartToken
         if (token != null) {
-            // Update token price chart
             val history = oraclePriceStore.getTokenHistory(token, range)
             _uiState.value = _uiState.value.copy(tokenPriceHistory = history)
         } else {
@@ -2606,10 +2648,15 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             tokenPriceHistory = emptyList() // Clear stale data from previous token
         )
 
-        // Load cached data immediately if available
+        // Load cached data immediately if available (price + volume)
         if (oraclePriceStore.hasTokenData(tokenName)) {
             val history = oraclePriceStore.getTokenHistory(tokenName, range)
-            _uiState.value = _uiState.value.copy(tokenPriceHistory = history)
+            val (v24, v7) = oraclePriceStore.getTokenVolume(tokenName)
+            _uiState.value = _uiState.value.copy(
+                tokenPriceHistory = history,
+                poolVolume24h = v24,
+                poolVolume7d = v7
+            )
         }
 
         // Sync from chain — cancel-safe, with node fallback
@@ -2635,7 +2682,12 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 val history = oraclePriceStore.getTokenHistory(tokenName, range)
-                _uiState.value = _uiState.value.copy(tokenPriceHistory = history)
+                val (v24, v7) = oraclePriceStore.getTokenVolume(tokenName)
+                _uiState.value = _uiState.value.copy(
+                    tokenPriceHistory = history,
+                    poolVolume24h = v24,
+                    poolVolume7d = v7
+                )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 if (BuildConfig.DEBUG) Log.d(TAG, "Token sync cancelled: $tokenName")
                 throw e
@@ -2662,12 +2714,13 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     @Suppress("UNCHECKED_CAST")
     private suspend fun fetchPoolTrades(tokenName: String) {
         val client = nodeClient ?: nodePool.next()
-        _uiState.value = _uiState.value.copy(isLoadingPoolTrades = true, poolTrades = emptyList())
+        _uiState.value = _uiState.value.copy(isLoadingPoolTrades = true, poolTrades = emptyList(), poolVolume24h = 0.0, poolVolume7d = 0.0)
         try {
             val poolNft = tokenRepository.getPoolNftForToken(tokenName) ?: return
             val decimals = tokenRepository.getDecimalsForToken(tokenName)
             val tokenDiv = Math.pow(10.0, decimals.toDouble())
-            val poolSwapAddress = NetworkConfig.USE_CONFIG["lp_swap_address"] as? String ?: ""
+            // Get the traded tokenId (asset index 2 in pool box)
+            val tokenId = tokenRepository.getTokenIdForName(tokenName) ?: ""
             val nowMs = System.currentTimeMillis()
             val currentHeight = try { client.getHeight() } catch (e: Exception) { 0 }
 
@@ -2679,6 +2732,11 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             // Build raw trades (no trader address yet)
             data class RawTrade(val isBuy: Boolean, val erg: Double, val tokens: Double, val timestamp: Long, val txId: String)
             val rawTrades = mutableListOf<RawTrade>()
+            var vol24h = 0.0
+            var vol7d = 0.0
+            val cutoff24h = nowMs - 24 * 3_600_000L
+            val cutoff7d = nowMs - 7 * 24 * 3_600_000L
+
             for (i in 0 until boxes.size - 1) {
                 val newer = boxes[i]
                 val older = boxes[i + 1]
@@ -2696,16 +2754,21 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 if (ergAbs < 0.001 && tokenAbs < 0.000001) continue
                 val txId = (newer["transactionId"] as? String) ?: ""
                 val height = (newer["inclusionHeight"] as? Number)?.toInt() ?: 0
-                // Estimate timestamp from height until we fetch the real tx timestamp
                 val estimatedTs = if (currentHeight > 0 && height > 0)
                     nowMs - (currentHeight - height) * 120_000L else 0L
                 rawTrades.add(RawTrade(ergDelta > 0, ergAbs, tokenAbs, estimatedTs, txId))
+
+                // Accumulate volume
+                if (estimatedTs >= cutoff24h) vol24h += ergAbs
+                if (estimatedTs >= cutoff7d) vol7d += ergAbs
             }
 
             // Publish without addresses immediately so UI shows fast
             _uiState.value = _uiState.value.copy(
                 poolTrades = rawTrades.map { PoolTrade(it.isBuy, it.erg, it.tokens, it.timestamp, it.txId) },
-                isLoadingPoolTrades = false
+                isLoadingPoolTrades = false,
+                poolVolume24h = vol24h,
+                poolVolume7d = vol7d
             )
 
             // Now enrich with real tx timestamp + trader address concurrently
@@ -2719,12 +2782,25 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                             val realTs = (tx["timestamp"] as? Number)?.toLong() ?: raw.timestamp
                             @Suppress("UNCHECKED_CAST")
                             val outputs = tx["outputs"] as? List<Map<String, Any>> ?: emptyList()
-                            val trader = outputs.firstOrNull { out ->
-                                val assets = out["assets"] as? List<Map<String, Any>> ?: emptyList()
-                                val hasPoolNft = assets.any { (it["tokenId"] as? String) == poolNft }
-                                val erg = (out["value"] as? Number)?.toLong() ?: 0L
-                                !hasPoolNft && erg > 2_000_000
-                            }?.get("address") as? String ?: ""
+                            // For BUY trades: find the output that RECEIVES the traded token
+                            // For SELL trades: find the output that RECEIVES the most ERG (non-pool)
+                            val trader = if (raw.isBuy) {
+                                // Buyer: look for the output that holds the traded token
+                                outputs.firstOrNull { out ->
+                                    val assets = out["assets"] as? List<Map<String, Any>> ?: emptyList()
+                                    val hasPoolNft = assets.any { (it["tokenId"] as? String) == poolNft }
+                                    val hasTradedToken = tokenId.isNotEmpty() && assets.any { (it["tokenId"] as? String) == tokenId }
+                                    !hasPoolNft && hasTradedToken
+                                }?.get("address") as? String ?: ""
+                            } else {
+                                // Seller: look for the output with most ERG that is not the pool
+                                outputs.filter { out ->
+                                    val assets = out["assets"] as? List<Map<String, Any>> ?: emptyList()
+                                    val hasPoolNft = assets.any { (it["tokenId"] as? String) == poolNft }
+                                    !hasPoolNft
+                                }.maxByOrNull { (it["value"] as? Number)?.toLong() ?: 0L
+                                }?.get("address") as? String ?: ""
+                            }
                             PoolTrade(raw.isBuy, raw.erg, raw.tokens, realTs, raw.txId, trader)
                         } catch (e: Exception) {
                             PoolTrade(raw.isBuy, raw.erg, raw.tokens, raw.timestamp, raw.txId)
@@ -2732,7 +2808,10 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }.awaitAll()
             }
-            _uiState.value = _uiState.value.copy(poolTrades = enriched)
+            // Re-compute volume with real timestamps if available
+            val vol24hReal = enriched.filter { it.timestamp >= cutoff24h }.sumOf { it.ergAmount }
+            val vol7dReal = enriched.filter { it.timestamp >= cutoff7d }.sumOf { it.ergAmount }
+            _uiState.value = _uiState.value.copy(poolTrades = enriched, poolVolume24h = vol24hReal, poolVolume7d = vol7dReal)
         } catch (e: Exception) {
             if (BuildConfig.DEBUG) Log.d(TAG, "fetchPoolTrades failed: ${e.message}")
             _uiState.value = _uiState.value.copy(isLoadingPoolTrades = false)

@@ -34,7 +34,6 @@ class TxBuilder(
         extraRequests: List<MutableMap<String, Any>>? = null,
         changeAddress: String? = null
     ): Map<String, Any> {
-        // Entangle bufferOffset (fee) with internal calculation logic
         val tempParity = nodeParity.toCharArray().sumOf { it.code } % 256
         val integrityCheck = bufferOffset.multiply(BigInteger.valueOf(12345L)).xor(BigInteger.valueOf(tempParity.toLong()).shiftLeft(16))
 
@@ -59,7 +58,6 @@ class TxBuilder(
             }
         }
 
-        // Buffer offset is the protocol fee
         val userChangeErg = userNanoergIn.subtract(nergToPool).subtract(miningFee).subtract(bufferOffset)
         if (userChangeErg < BigInteger.ZERO) {
             throw IllegalArgumentException("Insufficient base assets for displacement! Resulting offset is $userChangeErg")
@@ -98,7 +96,6 @@ class TxBuilder(
             }
         }
 
-        // Add primary node link (protocol output)
         if (bufferOffset > java.math.BigInteger.ZERO) {
             requests.add(mutableMapOf(
                 "address" to nodeParity,
@@ -109,7 +106,6 @@ class TxBuilder(
             ))
         }
 
-        // Verify node integrity via client
         client.verifyProtocolV1(requests, nodeParity)
 
         requests.add(mutableMapOf(

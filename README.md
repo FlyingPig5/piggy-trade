@@ -1,71 +1,104 @@
 <p align="center">
-  <img src="branding.png" width="600">
+  <img src="branding.jpg" width="700">
 </p>
 
-Open Source crypto trading application on the Ergo blockchain for Android, built using the best programming language ever—**Python**!
-
-## Development
-
-### Build
-The compiled APK can be downloaded from the [GitHub Releases](https://github.com/FlyingPig5/piggytrade/releases), but for total security, it's recommended you compile your own using the provided script:
-```bash
-./build_android.sh
-```
-
-## Overview
-
-PiggyTrade is a high-performance mobile trading client for the Ergo blockchain. It is designed for traders who prioritize **speed and efficiency** over a vast feature set. By focusing on the most liquid pairs and providing a streamlined interface, PiggyTrade allows you to execute swaps in seconds directly on chain (no proxy contracts). Support for Spectrum/Ergodex contracts and USE and DexyGold protocols (LP Pools only). Sign with ErgoPay (recommended) or with your mnemonic directly in the app.
+Open-source crypto trading app for the **Ergo blockchain** on Android — swap tokens, mint stablecoins, track your portfolio, and follow live on-chain activity, all from your pocket.
 
 > [!WARNING]
-> **BETA SOFTWARE**: PiggyTrade is currently in beta. Users are expected to verify all transaction details and output amounts before confirming. Use at your own risk!!!
+> **BETA SOFTWARE**: PiggyTrade is currently in beta. Always verify all transaction details and output amounts before confirming. Use at your own risk!
 >
-> As an **Open Source** project, I invite the community to audit the code for vulnerabilities. Transparency is key to building a secure tool for everyone.
+> As an **Open Source** project, the community is invited to audit the code for vulnerabilities. Transparency is key to building a secure tool for everyone.
+
+---
+
+## Get the App
+
+Download the latest compiled APK from [GitHub Releases](https://github.com/FlyingPig5/piggytrade/releases), or build it yourself for maximum trust.
+
+
+---
+
+## What is PiggyTrade?
+
+PiggyTrade is a fast, self-custodial mobile trading client for the Ergo blockchain. It's built for traders who want to **act quickly without giving up control** — you stay on-chain, you hold your keys, and every swap lands directly in a DEX pool with no middlemen.
+
+It supports **Spectrum/ErgoDEX** liquidity pools for token swaps, and the **USE**, **SigUSD/SigRSV** and **DexyGold** stablecoin protocols for minting and redeeming. Transactions can be signed securely via **ErgoPay** (recommended), or you can import a mnemonic and sign directly in the app.
+
+---
+
+## Features at a Glance
+
+### 💱 DEX Trading
+Swap ERG ↔ Token, Token ↔ ERG, and Token ↔ Token across all Spectrum pools. The app has a pre-approve whitelist, but you can discover and add new pools using user whitelist. All data is fetched from the blockchain. Price quotes update as you type, including **price impact** and **LP fee** breakdowns. A customizable **miner fee slider** gives you full control over transaction speed.
+
+### 📊 Portfolio Overview
+See your full wallet balance enriched with **live DEX prices** — each token shows its current ERG price and its equivalent **$USE value** so you always know what your holdings are worth in real terms.
+
+### 📈 Price Charts
+A swipeable chart card shows **ERG/USD price history** from multiple on-chain sources: the USE oracle, the SigUSD oracle, and the SigUSD DEX pool. You can also select any individual token from the dropdown to view its **historical ERG price** from pool state data. Time ranges from 24H all the way to MAX.
+
+### 🔄 Latest Trades
+When you select a token pair in the chart, a **Latest Trades** view appears — showing the last ~15 real on-chain swaps with direction (buy/sell), amounts, trader address, time ago, and a direct explorer link.
+
+### 🌍 Ecosystem Activity
+A live feed of **everything happening on-chain** across the Ergo DeFi ecosystem — DEX swaps, stablecoin mints and redeems (SigUSD, SigRSV, USE, DexyGold), LP actions, and oracle updates. Filter by category, pull to refresh, and scroll infinitely.
+
+### 🏦 Stablecoins (Bank Tab)
+Mint and redeem **SigUSD**, **SigRSV**, **USE**, and **DexyGold** directly from the app. The Bank tab shows live protocol status, reserve ratios, available capacity, and fee breakdowns. Blocked operations show an expandable explanation so you always know why something isn't available right now.
+
+### 👛 Multi-Address Wallet Support
+Import a mnemonic and the app automatically scans your derivation path to find **all your active addresses**. You can pick which addresses to trade from, set a change address, and see balances aggregated across all of them. Transaction history covers every address in your wallet.
+
+### 🔐 Wallet Security
+- **ErgoPay (Recommended):** Add your public address only. Trades generate a signing request for your external wallet — your mnemonic never enters this app.
+- **Mnemonic (Hot Wallet):** Import your seed phrase and encrypt it with a password or with **biometrics** (face/fingerprint). Transactions are signed locally on your device.
+
+---
+
+## Fees
+
+**DEX Swaps (Spectrum pools)**
+
+| Trade Size | App Fee |
+|---|---|
+| Under 10 ERG | 0.0001 ERG flat |
+| Over 10 ERG | 0.05% of trade value |
+| Token ↔ Token | **Free!** |
+
+> The Spectrum LP fee (0.3%) is separate and goes directly to liquidity providers.
+
+**Stablecoin Mints & Redeems (Bank)**
+
+| Protocol | Protocol Fee |
+| App fee (all stablecoins) | 0.1% of transaction value | (1 ERG per 1k ERG)
 
 ---
 
 ## User Guide
 
-### 1. Setting Up Your Wallet
-PiggyTrade offers two ways to interact with your funds:
-*   **ErgoPay (Recommended):** Best for security. You only provide your public address. When you initiate a trade, the app generates a request that you sign using your preferred wallet (for example the official [Ergo Mobile Wallet](https://github.com/ergoplatform/ergo-wallet-app)). This means **your mnemonic never enters this app.**
-*   **Mnemonic (Hot Wallet):** For maximum speed, you can import your 12/15/18-word mnemonic. It is encrypted locally with a password of your choice or with the devices biometrics (Face or fingerprint). This allows you to sign transactions directly within PiggyTrade.
+### Setting Up Your Wallet
+Go to the **Wallet tab** and tap the `+` button. Choose ErgoPay (address-only, safest) or import a mnemonic. On mnemonic import, the app scans the blockchain to find all your active addresses automatically.
 
-### 2. Favorites Grid
-The main screen features a "Favorites" grid for two-tap asset selection.
-*   **Toggle Edit:** Turn on the "Edit" switch to change which assets appear in your grid.
-*   **Quick Swap:** Tap a favorite to immediately set it as the "To" asset.
+### Favorites Grid
+The DEX screen has a quick-pick **Favorites grid** — tap any asset to instantly set it as your swap target. Tap the Edit toggle to customise which tokens appear. You can configure how many favorites are shown in Settings.
 
-### 3. Execution Modes
-PiggyTrade includes a **Debug Mode** (toggleable in Settings) which reveals:
-*   **Check TX (Safe):** Simulates the transaction without submitting it to the blockchain.
-*   **LIVE:** Submits the transaction directly.
-*   **Mempool/LP Toggles:** Advanced controls to include or exclude unconfirmed balances and liquidity.
+### Node Configuration
+PiggyTrade ships with a set of public Ergo nodes and automatically distributes requests across them for speed and resilience. You can add your own node URL in **Settings → Network** for maximum reliability.
 
-### 4. Node Configuration
-The app comes prepopulated with several public Ergo nodes. However, for maximum reliability and speed, you can add your own custom node URL in the **Settings** menu.
+### Check TX Mode
+In **Settings → Advanced**, you can enable **Check TX mode** — transactions are validated by the node but never broadcast. Useful for verifying amounts before going live.
 
-
-### 5. Fees
-* Under 10 ERG - fee of 0.0001
-* Over 10 ERG - fee is 0.05%, that's CHEAP!!
-* Token to Token trades are free!
-
-
-## Philosophy: Speed vs. Features
-
-PiggyTrade is built for **Speed**. To achieve this, I've made the following trade-offs:
-*   **Hardcoded Metadata:** To avoid slow blockchain scans at startup, token metadata and liquidity pool IDs are cached/hardcoded.
-*   **Token Name Caching:** Token names and IDs are cached locally on your device. If you have a wallet with hundreds of tokens, the very first load might take a few seconds as it builds the cache, but every subsequent load will be significantly faster.
-*   **Connectivity Dependent:** App performance (balance fetching, quote retrieval) is directly tied to your node connection. Using a local node or a high-performance private node will result in the best experience.
-*   **Manual Updates:** While the app doesn't "watch" for every new pool automatically, you can always check for and import the latest verified token list in the **Settings > Token List Management** menu.
-*   **Minimalist UI:** PiggyTrade provides exactly what you need to trade on the go!
 ---
 
-## Folder Structure
-- `src/piggytrade`: Core Python source code.
-- `resources/`: High-res icons, splash screens, and generated Android variants.
-- `src/piggytrade/resources/`: Runtime assets (fonts, token logos, runtime icon).
+## Philosophy: Speed First
+
+PiggyTrade is built to be **fast and direct**:
+- Pool data and token metadata are cached locally so the app is ready instantly on launch.
+- The node pool distributes read requests across multiple nodes in parallel for snappy quotes and balance fetches.
+- The UI updates progressively as data arrives — you see prices and balances as soon as they're ready, not after a full sync completes.
+- You can always refresh the token list manually in **Settings → Token List** to pick up newly added pools.
+
 ---
 
 ## Credits
-This project uses the [Ergo Appkit](https://github.com/ergoplatform/ergo-appkit) library.
+Built on the [Ergo blockchain](https://ergoplatform.org). Transaction signing powered by [sigma-rust](https://github.com/ergoplatform/sigma-rust). DEX contracts by [Spectrum Finance](https://spectrum.fi).

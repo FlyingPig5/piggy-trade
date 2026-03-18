@@ -20,3 +20,6 @@ local.properties
 /PiggyTradeNative/build/
 *.bin
 *.lock
+sigma-rust
+android-patches
+.antigravity

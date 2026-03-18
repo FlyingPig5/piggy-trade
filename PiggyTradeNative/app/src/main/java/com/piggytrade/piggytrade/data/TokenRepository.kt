@@ -456,7 +456,6 @@ class TokenRepository(private val context: Context) {
             saveTokenInfo(tid, mapOf("name" to (info.name ?: tid.take(8)), "decimals" to info.decimals))
         }
 
-        // Save files
         try {
             ergToTokenFile.writeText(gson.toJson(finalErgToToken))
             tokenToTokenFile.writeText(gson.toJson(finalTokenToToken))
@@ -668,7 +667,6 @@ class TokenRepository(private val context: Context) {
                 return (data["dec"] as? Number)?.toInt() ?: 0
             }
         }
-        // Check cache
         val info = cachedTokenInfo[tokenId]
         return (info?.get("decimals") as? Number)?.toInt() 
             ?: (info?.get("dec") as? Number)?.toInt() 
@@ -685,6 +683,31 @@ class TokenRepository(private val context: Context) {
     fun getDecimalsForToken(tokenName: String): Int {
         val data = tokens[tokenName] ?: return 0
         return (data["dec"] as? Number)?.toInt() ?: 0
+    }
+
+    /** Get the traded token's asset ID by display name */
+    fun getTokenIdForName(tokenName: String): String? {
+        val data = tokens[tokenName] ?: return null
+        return data["id"] as? String
+    }
+
+    /** Get all whitelisted token triples: (name, poolNft, decimals) for syncing all market data */
+    fun getWhitelistedTokensWithPools(): List<Triple<String, String, Int>> {
+        return tokens.entries
+            .filter { (name, data) ->
+                val pid = data["pid"] as? String
+                if (pid.isNullOrEmpty()) return@filter false
+                if (data.containsKey("id_in")) return@filter false
+                if (name.contains("-")) return@filter false
+                isPidWhitelisted(pid)
+            }
+            .map { (name, data) ->
+                Triple(
+                    name,
+                    data["pid"] as String,
+                    (data["dec"] as? Number)?.toInt() ?: 0
+                )
+            }
     }
 
     /** Get all token names that have a DEX pool (pid), sorted alphabetically.

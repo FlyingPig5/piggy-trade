@@ -303,7 +303,6 @@ class ErgoSigner(private val nodeUrl: String) {
         val fee = (txDict["fee"] as? Number)?.toLong() ?: 1100000L
         val currentHeight = (txDict["current_height"] as? Number)?.toInt() ?: 0
         
-        // Use input_boxes from txDict or fallback to empty
         val inputBoxes = txDict["input_boxes"] as? List<Map<String, Any>> ?: emptyList()
         @Suppress("UNCHECKED_CAST")
         val contextExtensions = txDict["context_extensions"] as? Map<String, Map<String, String>> ?: emptyMap()
@@ -320,7 +319,6 @@ class ErgoSigner(private val nodeUrl: String) {
 
         val outputsJsonList = mutableListOf<Map<String, Any>>()
         
-        // Add user defined requests
         for (req in requests) {
             val assets = (req["assets"] as? List<Map<String, Any>> ?: emptyList()).map { 
                 mapOf("tokenId" to it["tokenId"], "amount" to parseAmount(it["amount"]))
