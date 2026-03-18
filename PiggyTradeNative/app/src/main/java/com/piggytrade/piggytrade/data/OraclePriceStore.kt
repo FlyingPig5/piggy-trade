@@ -8,7 +8,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.piggytrade.piggytrade.BuildConfig
 import com.piggytrade.piggytrade.network.NodeClient
+import com.piggytrade.piggytrade.network.NodePool
 import com.piggytrade.piggytrade.stablecoin.VlqCodec
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -33,19 +38,38 @@ class OraclePriceStore(private val context: Context) {
     }
 
     data class PricePoint(val height: Int, val price: Double)
+    data class VolumePoint(val height: Int, val ergDelta: Double)
 
     data class PriceHistory(
         val lastHeight: Int = 0,
-        val prices: MutableList<PricePoint> = mutableListOf()
+        val prices: MutableList<PricePoint> = mutableListOf(),
+        val volumes: MutableList<VolumePoint> = mutableListOf(),
+        var syncComplete: Boolean = false,
+        var lastScanOffset: Int = 0     // resume point for interrupted syncs
+    )
+
+    /** Market summary for one token, computed after sync */
+    data class TokenMarketData(
+        val name: String,
+        val currentPriceErg: Double,
+        val priceChange24h: Double,     // % change
+        val priceChange7d: Double,      // % change
+        val volume24hErg: Double,
+        val volume7dErg: Double,
+        val lastSynced: Long = 0L
     )
 
     // In-memory caches
     private var useOracle = PriceHistory()
     private var sigUsdOracle = PriceHistory()
     private var sigUsdDex = PriceHistory()
-    private var currentHeight = 0
+    internal var currentHeight = 0
+        private set
     /** Arbitrary token DEX price histories keyed by token name */
     private val tokenDexData = mutableMapOf<String, PriceHistory>()
+    /** Computed market data for all synced tokens */
+    var allTokenMarketData by mutableStateOf<List<TokenMarketData>>(emptyList())
+        private set
     /** True when local data is empty (first run) */
     var isFirstSync = false
         private set
@@ -58,6 +82,19 @@ class OraclePriceStore(private val context: Context) {
     /** Progress 0.0–1.0 of current sync, -1 = indeterminate */
     var syncProgressPercent by mutableFloatStateOf(-1f)
         private set
+    /** All-token background sync progress */
+    var allTokenSyncLabel by mutableStateOf("")
+        private set
+    var allTokenSyncProgress by mutableFloatStateOf(-1f)
+        private set
+    var allTokenSyncIndex by mutableStateOf(0)
+        private set
+    var allTokenSyncTotal by mutableStateOf(0)
+        private set
+    var isSyncingAllTokens by mutableStateOf(false)
+        private set
+    /** Timestamp when isSyncingAllTokens was last set to true — used to detect stale flags */
+    private var syncingAllTokensStartMs = 0L
 
     /** Load all cached data from disk */
     fun loadAll() {
@@ -65,6 +102,7 @@ class OraclePriceStore(private val context: Context) {
         sigUsdOracle = loadFromFile("oracle_sigusd.json")
         sigUsdDex = loadFromFile("dex_sigusd.json")
         isFirstSync = useOracle.prices.isEmpty() && sigUsdOracle.prices.isEmpty() && sigUsdDex.prices.isEmpty()
+
         if (BuildConfig.DEBUG) Log.d(TAG, "Loaded: USE=${useOracle.prices.size} SigUSD=${sigUsdOracle.prices.size} DEX=${sigUsdDex.prices.size} firstSync=$isFirstSync")
     }
 
@@ -85,21 +123,55 @@ class OraclePriceStore(private val context: Context) {
             }
             if (BuildConfig.DEBUG) Log.d(TAG, "Current height: $currentHeight")
 
-            syncProgressLabel = "Syncing USE oracle..."
+            if (useOracle.syncComplete) {
+                syncProgressLabel = "Updating USE oracle..."
+            } else {
+                val useResumeAt = if (useOracle.lastScanOffset > 0) " (resuming at ${useOracle.lastScanOffset})" else ""
+                syncProgressLabel = "Syncing USE oracle...$useResumeAt"
+            }
             syncProgressPercent = 0f
+            if (BuildConfig.DEBUG) Log.d(TAG, "Starting USE sync: complete=${useOracle.syncComplete} offset=${useOracle.lastScanOffset} prices=${useOracle.prices.size}")
             syncOracle(client, USE_ORACLE_NFT, useOracle, "oracle_use.json", "USE")
-            syncProgressLabel = "Syncing SigUSD oracle..."
+
+            if (sigUsdOracle.syncComplete) {
+                syncProgressLabel = "Updating SigUSD oracle..."
+            } else {
+                val sigResumeAt = if (sigUsdOracle.lastScanOffset > 0) " (resuming at ${sigUsdOracle.lastScanOffset})" else ""
+                syncProgressLabel = "Syncing SigUSD oracle...$sigResumeAt"
+            }
             syncProgressPercent = 0f
+            if (BuildConfig.DEBUG) Log.d(TAG, "Starting SigUSD sync: complete=${sigUsdOracle.syncComplete} offset=${sigUsdOracle.lastScanOffset} prices=${sigUsdOracle.prices.size}")
             syncOracle(client, SIGUSD_ORACLE_NFT, sigUsdOracle, "oracle_sigusd.json", "SigUSD")
-            syncProgressLabel = "Syncing SigUSD DEX..."
+
+            if (sigUsdDex.syncComplete) {
+                syncProgressLabel = "Updating SigUSD DEX..."
+            } else {
+                val dexResumeAt = if (sigUsdDex.lastScanOffset > 0) " (resuming at ${sigUsdDex.lastScanOffset})" else ""
+                syncProgressLabel = "Syncing SigUSD DEX...$dexResumeAt"
+            }
             syncProgressPercent = 0f
+            if (BuildConfig.DEBUG) Log.d(TAG, "Starting SigUSD DEX sync: complete=${sigUsdDex.syncComplete} offset=${sigUsdDex.lastScanOffset} prices=${sigUsdDex.prices.size}")
             syncDexPool(client, SIGUSD_DEX_POOL_NFT, sigUsdDex, "dex_sigusd.json")
+
             syncProgressLabel = ""
             syncProgressPercent = -1f
+
+            // Verify all oracle syncs completed — if any failed mid-sync, signal failure
+            val incomplete = mutableListOf<String>()
+            if (!useOracle.syncComplete) incomplete.add("USE")
+            if (!sigUsdOracle.syncComplete) incomplete.add("SigUSD")
+            if (!sigUsdDex.syncComplete) incomplete.add("SigUSD DEX")
+            if (incomplete.isNotEmpty()) {
+                if (BuildConfig.DEBUG) Log.d(TAG, "Oracle sync incomplete: ${incomplete.joinToString()}")
+                throw Exception("Oracle sync incomplete: ${incomplete.joinToString()}")
+            }
+
+            if (BuildConfig.DEBUG) Log.d(TAG, "All oracle syncs complete")
         } catch (e: Exception) {
             if (BuildConfig.DEBUG) Log.d(TAG, "Sync failed: ${e.message}")
             syncProgressLabel = ""
             syncProgressPercent = -1f
+            throw e  // re-throw so caller knows oracle sync didn't complete
         }
     }
 
@@ -117,7 +189,7 @@ class OraclePriceStore(private val context: Context) {
         history.prices.addAll(deduped)
 
         val newLast = history.prices.maxOf { it.height }
-        val updated = PriceHistory(newLast, history.prices)
+        val updated = PriceHistory(newLast, history.prices, history.volumes, history.syncComplete, history.lastScanOffset)
         saveToFile(filename, updated)
         when (nft) {
             USE_ORACLE_NFT -> useOracle = updated
@@ -129,18 +201,26 @@ class OraclePriceStore(private val context: Context) {
     /** Merge new points into history for token DEX sources, returns the updated PriceHistory */
     private fun mergeAndSaveToken(
         tokenName: String, history: PriceHistory,
-        newPoints: List<PricePoint>, filename: String
+        newPoints: List<PricePoint>, newVolumes: List<VolumePoint>, filename: String
     ): PriceHistory {
-        val reversed = newPoints.reversed()
-        history.prices.addAll(reversed)
+        val reversedPrices = newPoints.reversed()
+        history.prices.addAll(reversedPrices)
         while (history.prices.size > MAX_POINTS) history.prices.removeAt(0)
         history.prices.sortBy { it.height }
-        val deduped = history.prices.distinctBy { it.height }.toMutableList()
+        val dedupedPrices = history.prices.distinctBy { it.height }.toMutableList()
         history.prices.clear()
-        history.prices.addAll(deduped)
+        history.prices.addAll(dedupedPrices)
 
-        val newLast = history.prices.maxOf { it.height }
-        val updated = PriceHistory(newLast, history.prices)
+        val reversedVolumes = newVolumes.reversed()
+        history.volumes.addAll(reversedVolumes)
+        while (history.volumes.size > MAX_POINTS) history.volumes.removeAt(0)
+        history.volumes.sortBy { it.height }
+        val dedupedVolumes = history.volumes.distinctBy { it.height }.toMutableList()
+        history.volumes.clear()
+        history.volumes.addAll(dedupedVolumes)
+
+        val newLast = history.prices.maxOfOrNull { it.height } ?: history.lastHeight
+        val updated = PriceHistory(newLast, history.prices, history.volumes, history.syncComplete, history.lastScanOffset)
         saveToFile(filename, updated)
         return updated
     }
@@ -153,14 +233,20 @@ class OraclePriceStore(private val context: Context) {
     ) {
         try {
             val newPoints = mutableListOf<PricePoint>()
-            var offset = 0
+            // Resume from last scan position if previous sync was interrupted
+            var offset = if (!history.syncComplete && history.lastScanOffset > 0) history.lastScanOffset else 0
             val pageSize = 100
             var done = false
             var totalBoxes = 0
             // Capture the stop-height BEFORE the loop so that incremental checkpoint saves
             // (which update lastHeight) don't affect the break condition.
             val breakAtHeight = history.lastHeight
-            val MIN_HEIGHT_GAP = 180
+            // If previous sync didn't complete, find lowest cached height to know where to resume
+            val canBreakAtCached = history.syncComplete
+            val lowestCachedHeight = if (!canBreakAtCached && history.prices.isNotEmpty())
+                history.prices.minOf { it.height } else 0
+            // Adaptive gap: ~15 min (8 blocks) for last 24h, ~6h (180 blocks) for older data
+            val height24h = if (currentHeight > 720) currentHeight - 720 else 0
             var lastStoredHeight = Int.MAX_VALUE
 
             while (!done) {
@@ -169,11 +255,14 @@ class OraclePriceStore(private val context: Context) {
 
                 for (box in items) {
                     val h = (box["inclusionHeight"] as? Number)?.toInt() ?: continue
-                    if (h <= breakAtHeight) {
+                    if (canBreakAtCached && h <= breakAtHeight) {
                         done = true
                         break
                     }
-                    if (lastStoredHeight != Int.MAX_VALUE && (lastStoredHeight - h) < MIN_HEIGHT_GAP) continue
+                    // Skip heights in the already-cached range, but keep scanning below it
+                    if (!canBreakAtCached && h in lowestCachedHeight..breakAtHeight) continue
+                    val minGap = if (h >= height24h) 8 else 180
+                    if (lastStoredHeight != Int.MAX_VALUE && (lastStoredHeight - h) < minGap) continue
 
                     val regs = box["additionalRegisters"] as? Map<String, Any> ?: continue
                     val r4 = regs["R4"] as? String ?: continue
@@ -190,25 +279,46 @@ class OraclePriceStore(private val context: Context) {
                 if (items.size < pageSize) break
                 offset += pageSize
                 if (totalBoxes == 0) totalBoxes = (resp["total"] as? Number)?.toInt() ?: 0
-                val progressStr = if (totalBoxes > 0) "${String.format("%,d", offset)} / ${String.format("%,d", totalBoxes)}" else "${String.format("%,d", offset)}"
-                syncProgressPercent = if (totalBoxes > 0) (offset.toFloat() / totalBoxes.toFloat()).coerceAtMost(0.99f) else -1f
-                syncProgressLabel = "Syncing $label ($progressStr boxes) — ${newPoints.size} stored"
+                if (canBreakAtCached) {
+                    // Completed sync — just fetching recent updates, show simpler label
+                    syncProgressPercent = -1f  // indeterminate since it'll finish fast
+                    syncProgressLabel = "Updating $label (recent data) — ${history.prices.size + newPoints.size} stored"
+                } else {
+                    // First/incomplete sync — show full progress
+                    val progressStr = if (totalBoxes > 0) "${String.format("%,d", offset)} / ${String.format("%,d", totalBoxes)}" else "${String.format("%,d", offset)}"
+                    syncProgressPercent = if (totalBoxes > 0) (offset.toFloat() / totalBoxes.toFloat()).coerceAtMost(0.99f) else -1f
+                    syncProgressLabel = "Syncing $label ($progressStr boxes) — ${history.prices.size + newPoints.size} stored"
+                }
 
-                // Checkpoint: save to disk every 2,000 boxes so progress survives app kills
-                if (newPoints.size >= 50 && offset % 2000 == 0) {
-                    mergeAndSave(nft, history, newPoints, filename)
-                    newPoints.clear()
+                // Always track current scan position
+                history.lastScanOffset = offset
+
+                // Checkpoint: save to disk every 500 boxes so progress survives app kills
+                if (offset % 500 == 0 && (newPoints.isNotEmpty() || !canBreakAtCached)) {
+                    if (newPoints.isNotEmpty()) {
+                        mergeAndSave(nft, history, newPoints, filename)
+                        newPoints.clear()
+                    } else {
+                        // Even with no new points, save the offset so we can resume
+                        saveToFile(filename, history)
+                    }
                 }
 
                 if (offset > 500_000) break
             }
 
-            // Final save
+            // Final save — include any remaining points and the current offset
+            history.lastScanOffset = offset
             if (newPoints.isNotEmpty()) {
                 mergeAndSave(nft, history, newPoints, filename)
             }
 
-            if (BuildConfig.DEBUG) Log.d(TAG, "$label: total=${history.prices.size}")
+            // Mark sync as complete — next run can skip past cached data
+            history.syncComplete = true
+            history.lastScanOffset = 0  // reset offset for future syncs
+            saveToFile(filename, history)
+
+            if (BuildConfig.DEBUG) Log.d(TAG, "$label: total=${history.prices.size} complete")
         } catch (e: Exception) {
             if (BuildConfig.DEBUG) Log.d(TAG, "$label sync failed: ${e.message}")
         }
@@ -221,12 +331,15 @@ class OraclePriceStore(private val context: Context) {
     ) {
         try {
             val newPoints = mutableListOf<PricePoint>()
-            var offset = 0
+            var offset = if (!history.syncComplete && history.lastScanOffset > 0) history.lastScanOffset else 0
             val pageSize = 500
             var done = false
             var totalBoxes = 0
             val breakAtHeight = history.lastHeight
-            val MIN_HEIGHT_GAP = 180
+            val canBreakAtCached = history.syncComplete
+            val lowestCachedHeight = if (!canBreakAtCached && history.prices.isNotEmpty())
+                history.prices.minOf { it.height } else 0
+            val height24h = if (currentHeight > 720) currentHeight - 720 else 0
             var lastStoredHeight = Int.MAX_VALUE
 
             while (!done) {
@@ -235,11 +348,13 @@ class OraclePriceStore(private val context: Context) {
 
                 for (box in items) {
                     val h = (box["inclusionHeight"] as? Number)?.toInt() ?: continue
-                    if (h <= breakAtHeight) {
+                    if (canBreakAtCached && h <= breakAtHeight) {
                         done = true
                         break
                     }
-                    if (lastStoredHeight != Int.MAX_VALUE && (lastStoredHeight - h) < MIN_HEIGHT_GAP) continue
+                    if (!canBreakAtCached && h in lowestCachedHeight..breakAtHeight) continue
+                    val minGap = if (h >= height24h) 8 else 180
+                    if (lastStoredHeight != Int.MAX_VALUE && (lastStoredHeight - h) < minGap) continue
 
                     val ergReserve = (box["value"] as? Number)?.toLong() ?: continue
                     val assets = box["assets"] as? List<Map<String, Any>> ?: continue
@@ -255,23 +370,39 @@ class OraclePriceStore(private val context: Context) {
                 if (items.size < pageSize) break
                 offset += pageSize
                 if (totalBoxes == 0) totalBoxes = (resp["total"] as? Number)?.toInt() ?: 0
-                val progressStr = if (totalBoxes > 0) "${String.format("%,d", offset)} / ${String.format("%,d", totalBoxes)}" else "${String.format("%,d", offset)}"
-                syncProgressPercent = if (totalBoxes > 0) (offset.toFloat() / totalBoxes.toFloat()).coerceAtMost(0.99f) else -1f
-                syncProgressLabel = "Syncing SigUSD DEX ($progressStr boxes) — ${newPoints.size} stored"
+                if (canBreakAtCached) {
+                    syncProgressPercent = -1f
+                    syncProgressLabel = "Updating SigUSD DEX (recent data) — ${history.prices.size + newPoints.size} stored"
+                } else {
+                    val progressStr = if (totalBoxes > 0) "${String.format("%,d", offset)} / ${String.format("%,d", totalBoxes)}" else "${String.format("%,d", offset)}"
+                    syncProgressPercent = if (totalBoxes > 0) (offset.toFloat() / totalBoxes.toFloat()).coerceAtMost(0.99f) else -1f
+                    syncProgressLabel = "Syncing SigUSD DEX ($progressStr boxes) — ${history.prices.size + newPoints.size} stored"
+                }
 
-                if (newPoints.size >= 50 && offset % 2000 == 0) {
-                    mergeAndSave(SIGUSD_DEX_POOL_NFT, history, newPoints, filename)
-                    newPoints.clear()
+                history.lastScanOffset = offset
+
+                if (offset % 500 == 0 && (newPoints.isNotEmpty() || !canBreakAtCached)) {
+                    if (newPoints.isNotEmpty()) {
+                        mergeAndSave(SIGUSD_DEX_POOL_NFT, history, newPoints, filename)
+                        newPoints.clear()
+                    } else {
+                        saveToFile(filename, history)
+                    }
                 }
                 
                 if (offset > 500_000) break
             }
 
+            history.lastScanOffset = offset
             if (newPoints.isNotEmpty()) {
                 mergeAndSave(SIGUSD_DEX_POOL_NFT, history, newPoints, filename)
             }
 
-            if (BuildConfig.DEBUG) Log.d(TAG, "SigUSD DEX: total=${history.prices.size}")
+            history.syncComplete = true
+            history.lastScanOffset = 0
+            saveToFile(filename, history)
+
+            if (BuildConfig.DEBUG) Log.d(TAG, "SigUSD DEX: total=${history.prices.size} complete")
         } catch (e: Exception) {
             if (BuildConfig.DEBUG) Log.d(TAG, "SigUSD DEX sync failed: ${e.message}")
         }
@@ -280,6 +411,7 @@ class OraclePriceStore(private val context: Context) {
     /**
      * Sync price history for any token from its DEX pool.
      * Price is in ERG per token (how much ERG one token is worth).
+     * Also tracks 24h and 7d ERG volume from pool box state changes.
      */
     @Suppress("UNCHECKED_CAST")
     suspend fun syncTokenDex(
@@ -294,14 +426,31 @@ class OraclePriceStore(private val context: Context) {
             // Publish cached data immediately if available
             if (history.prices.isNotEmpty()) onCheckpoint?.invoke()
 
+            // Skip sync entirely if synced very recently (within ~1 hour = 30 blocks)
+            if (history.syncComplete && currentHeight > 0 && history.lastHeight > 0 &&
+                (currentHeight - history.lastHeight) < 30) {
+                if (BuildConfig.DEBUG) Log.d(TAG, "Token $tokenName: skipping, synced recently (${currentHeight - history.lastHeight} blocks ago)")
+                return
+            }
+
             val newPoints = mutableListOf<PricePoint>()
-            var offset = 0
+            val newVolumes = mutableListOf<VolumePoint>()
+            var offset = if (!history.syncComplete && history.lastScanOffset > 0) history.lastScanOffset else 0
             val pageSize = 500
             var done = false
             var totalBoxes = 0
             val breakAtHeight = history.lastHeight
-            val MIN_HEIGHT_GAP = 180
+            val canBreakAtCached = history.syncComplete
+            val lowestCachedHeight = if (!canBreakAtCached && history.prices.isNotEmpty())
+                history.prices.minOf { it.height } else 0
             var lastStoredHeight = Int.MAX_VALUE
+
+            val height24h = if (currentHeight > 720) currentHeight - 720 else 0
+            val height7d = if (currentHeight > 5040) currentHeight - 5040 else 0
+            var prevErgReserve: Long? = null
+
+            // Need volume backfill if we have no stored volume data within the 7d window
+            val needsVolumeBackfill = canBreakAtCached && history.volumes.count { it.height >= height7d } < 5
 
             if (currentHeight == 0) {
                 try {
@@ -319,15 +468,32 @@ class OraclePriceStore(private val context: Context) {
 
                 for (box in items) {
                     val h = (box["inclusionHeight"] as? Number)?.toInt() ?: continue
-                    if (h <= breakAtHeight) {
-                        done = true
-                        break
-                    }
-                    if (lastStoredHeight != Int.MAX_VALUE && (lastStoredHeight - h) < MIN_HEIGHT_GAP) continue
-
                     val ergReserve = (box["value"] as? Number)?.toLong() ?: continue
                     val assets = box["assets"] as? List<Map<String, Any>> ?: continue
                     if (assets.size < 3) continue
+
+                    // Store volume data point for each trade (within 7d window)
+                    if (prevErgReserve != null && h >= height7d) {
+                        val ergDelta = Math.abs(prevErgReserve - ergReserve) / 1_000_000_000.0
+                        if (ergDelta > 0.001) {
+                            newVolumes.add(VolumePoint(h, ergDelta))
+                        }
+                    }
+                    prevErgReserve = ergReserve
+
+                    // For completed syncs: stop at cached height for prices.
+                    // But if we need volume backfill, keep scanning to 7d.
+                    if (canBreakAtCached && h <= breakAtHeight) {
+                        if (!needsVolumeBackfill || h < height7d) {
+                            done = true
+                            break
+                        }
+                        continue  // skip price storage but keep scanning for volume
+                    }
+                    if (!canBreakAtCached && h in lowestCachedHeight..breakAtHeight) continue
+                    val minGap = if (h >= height24h) 8 else 180
+                    if (lastStoredHeight != Int.MAX_VALUE && (lastStoredHeight - h) < minGap) continue
+
                     val tokenReserve = (assets[2]["amount"] as? Number)?.toLong() ?: continue
                     if (tokenReserve > 0 && ergReserve > 0) {
                         val tokenDiv = Math.pow(10.0, tokenDecimals.toDouble())
@@ -342,32 +508,227 @@ class OraclePriceStore(private val context: Context) {
                 if (items.size < pageSize) break
                 offset += pageSize
                 if (totalBoxes == 0) totalBoxes = (resp["total"] as? Number)?.toInt() ?: 0
-                val progressStr = if (totalBoxes > 0) "${String.format("%,d", offset)} / ${String.format("%,d", totalBoxes)}" else "${String.format("%,d", offset)}"
-                syncProgressPercent = if (totalBoxes > 0) (offset.toFloat() / totalBoxes.toFloat()).coerceAtMost(0.99f) else -1f
-                syncProgressLabel = "Syncing $tokenName ($progressStr boxes) — ${newPoints.size} stored"
+                if (canBreakAtCached) {
+                    syncProgressPercent = -1f
+                    syncProgressLabel = "Updating $tokenName — ${history.prices.size + newPoints.size} stored"
+                } else {
+                    val progressStr = if (totalBoxes > 0) "${String.format("%,d", offset)} / ${String.format("%,d", totalBoxes)}" else "${String.format("%,d", offset)}"
+                    syncProgressPercent = if (totalBoxes > 0) (offset.toFloat() / totalBoxes.toFloat()).coerceAtMost(0.99f) else -1f
+                    syncProgressLabel = "Syncing $tokenName ($progressStr boxes) — ${history.prices.size + newPoints.size} stored"
+                }
 
-                if (newPoints.size >= 50 && offset % 2000 == 0) {
-                    val updated = mergeAndSaveToken(tokenName, history, newPoints, filename)
-                    tokenDexData[tokenName] = updated
-                    newPoints.clear()
-                    onCheckpoint?.invoke()
+                history.lastScanOffset = offset
+
+                if (offset % 500 == 0 && (newPoints.isNotEmpty() || !canBreakAtCached)) {
+                    if (newPoints.isNotEmpty()) {
+                        val updated = mergeAndSaveToken(tokenName, history, newPoints, newVolumes, filename)
+                        tokenDexData[tokenName] = updated
+                        newPoints.clear()
+                        newVolumes.clear()
+                        onCheckpoint?.invoke()
+                    } else {
+                        saveToFile(filename, history)
+                    }
                 }
                 
                 if (offset > 500_000) break
             }
 
-            if (newPoints.isNotEmpty()) {
-                val updated = mergeAndSaveToken(tokenName, history, newPoints, filename)
+            history.lastScanOffset = offset
+            // Merge new data (prices + volumes)
+            if (newPoints.isNotEmpty() || newVolumes.isNotEmpty()) {
+                val updated = mergeAndSaveToken(tokenName, history, newPoints, newVolumes, filename)
                 tokenDexData[tokenName] = updated
             }
 
-            if (BuildConfig.DEBUG) Log.d(TAG, "Token $tokenName: total=${history.prices.size}")
+            // Prune volume points older than 7 days
+            history.volumes.removeAll { it.height < height7d }
+
+            // Mark sync complete
+            history.syncComplete = true
+            history.lastScanOffset = 0
+            saveToFile(filename, history)
+
+            if (BuildConfig.DEBUG) Log.d(TAG, "Token $tokenName: prices=${history.prices.size} volumes=${history.volumes.size} complete")
         } catch (e: Exception) {
             if (BuildConfig.DEBUG) Log.d(TAG, "Token $tokenName sync failed: ${e.message}")
         } finally {
             isTokenSyncing = false
             syncProgressLabel = ""
             syncProgressPercent = -1f
+        }
+    }
+
+    /**
+     * Get volume data for a token (computed from stored VolumePoints).
+     * Returns Pair(vol24h, vol7d) in ERG.
+     */
+    fun getTokenVolume(tokenName: String): Pair<Double, Double> {
+        val history = tokenDexData[tokenName] ?: return Pair(0.0, 0.0)
+        if (history.volumes.isEmpty() || currentHeight == 0) return Pair(0.0, 0.0)
+        val height24h = currentHeight - 720
+        val height7d = if (currentHeight > 5040) currentHeight - 5040 else 0
+        val vol24h = history.volumes.filter { it.height >= height24h }.sumOf { it.ergDelta }
+        val vol7d = history.volumes.filter { it.height >= height7d }.sumOf { it.ergDelta }
+        return Pair(vol24h, vol7d)
+    }
+
+    /**
+     * Compute market data for a single token from its price history + stored volume points.
+     */
+    fun computeMarketData(tokenName: String): TokenMarketData? {
+        val history = tokenDexData[tokenName] ?: return null
+        if (history.prices.isEmpty() || currentHeight == 0) return null
+
+        val latestPrice = history.prices.lastOrNull()?.price ?: return null
+        val height24h = currentHeight - 720
+        val height7d = if (currentHeight > 5040) currentHeight - 5040 else 0
+
+        // Find price closest to 24h ago
+        val price24h = history.prices.lastOrNull { it.height <= height24h }?.price ?: latestPrice
+        // Find price closest to 7d ago
+        val price7d = history.prices.lastOrNull { it.height <= height7d }?.price ?: latestPrice
+
+        val change24h = if (price24h > 0) ((latestPrice - price24h) / price24h) * 100.0 else 0.0
+        val change7d = if (price7d > 0) ((latestPrice - price7d) / price7d) * 100.0 else 0.0
+
+        // Compute volume from stored VolumePoints
+        val vol24h = history.volumes.filter { it.height >= height24h }.sumOf { it.ergDelta }
+        val vol7d = history.volumes.filter { it.height >= height7d }.sumOf { it.ergDelta }
+
+        return TokenMarketData(
+            name = tokenName,
+            currentPriceErg = latestPrice,
+            priceChange24h = change24h,
+            priceChange7d = change7d,
+            volume24hErg = vol24h,
+            volume7dErg = vol7d,
+            lastSynced = System.currentTimeMillis()
+        )
+    }
+
+    /**
+     * Background sync ALL whitelisted tokens' price + volume data.
+     * Uses multiple nodes in parallel for faster syncing.
+     * tokens: List<Triple<name, poolNft, decimals>>
+     */
+    @Suppress("UNCHECKED_CAST")
+    suspend fun syncAllTokens(
+        nodePool: NodePool,
+        tokens: List<Triple<String, String, Int>>
+    ) {
+        // Guard: if the flag has been stuck for >10 min (stale from a previous ViewModel), reset it
+        val nowMs = System.currentTimeMillis()
+        if (isSyncingAllTokens) {
+            if (nowMs - syncingAllTokensStartMs < 2 * 60 * 1000L) return
+            // Flag is stale — force reset and continue
+            if (BuildConfig.DEBUG) Log.d(TAG, "syncAllTokens: stale isSyncingAllTokens flag, resetting")
+        }
+        isSyncingAllTokens = true
+        syncingAllTokensStartMs = nowMs
+        try {
+            if (currentHeight == 0) {
+                val client = nodePool.next()
+                val info = client.api.getNodeInfo()
+                currentHeight = (info["fullHeight"] as? Number)?.toInt() ?: 0
+            }
+
+            val total = tokens.size
+            allTokenSyncTotal = total
+
+            // Resume from last completed token if app was interrupted
+            val prefs = context.getSharedPreferences("oracle_sync", android.content.Context.MODE_PRIVATE)
+            val resumeFrom = prefs.getInt("allTokenResumeIndex", 0)
+            if (resumeFrom > 0 && BuildConfig.DEBUG) Log.d(TAG, "Resuming market sync from token $resumeFrom / $total")
+
+            // Load cached data for already-synced tokens
+            if (resumeFrom > 0) {
+                for (i in 0 until resumeFrom) {
+                    val (name, _, _) = tokens[i]
+                    if (!tokenDexData.containsKey(name)) {
+                        val filename = "dex_${name.lowercase().replace(" ", "_")}.json"
+                        val loaded = loadFromFile(filename)
+                        if (loaded.prices.isNotEmpty()) tokenDexData[name] = loaded
+                    }
+                }
+                allTokenMarketData = tokenDexData.keys.mapNotNull { computeMarketData(it) }
+                    .sortedByDescending { it.volume7dErg }
+            }
+
+            // Get remaining tokens to sync
+            val remaining = tokens.drop(resumeFrom)
+            if (remaining.isEmpty()) {
+                prefs.edit().putInt("allTokenResumeIndex", 0).apply()
+                return
+            }
+
+            // Split into parallel groups — one per available node (max 3)
+            val parallelism = minOf(nodePool.size, 3).coerceAtLeast(1)
+            val chunks = remaining.chunked((remaining.size + parallelism - 1) / parallelism)
+            val completedCount = java.util.concurrent.atomic.AtomicInteger(resumeFrom)
+
+            if (BuildConfig.DEBUG) Log.d(TAG, "Syncing ${remaining.size} tokens across $parallelism nodes")
+
+            coroutineScope {
+                chunks.mapIndexed { chunkIdx, chunk ->
+                    // Each chunk starts with its own node; on per-token failure it rotates
+                    var chunkClient = nodePool.next()
+                    async(Dispatchers.IO) {
+                        for ((name, poolNft, decimals) in chunk) {
+                            try {
+                                // 8s hard timeout per token — each page fetch should be fast;
+                                // if a node hangs on a connection, we rotate immediately
+                                kotlinx.coroutines.withTimeout(8_000L) {
+                                    syncTokenDex(chunkClient, name, poolNft, decimals)
+                                }
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                                if (BuildConfig.DEBUG) Log.d(TAG, "syncAllTokens: $name timed out, rotating node")
+                                // Rotate to a fresh node so the next token isn't stuck on the same bad node
+                                chunkClient = nodePool.next()
+                            } catch (e: Exception) {
+                                if (BuildConfig.DEBUG) Log.d(TAG, "syncAllTokens: $name failed: ${e.message}, rotating node")
+                                chunkClient = nodePool.next()
+                            }
+
+                            val done = completedCount.incrementAndGet()
+                            // Save resume index
+                            prefs.edit().putInt("allTokenResumeIndex", done).apply()
+
+                            // Update progress UI
+                            allTokenSyncIndex = done
+                            allTokenSyncLabel = name
+                            allTokenSyncProgress = (done.toFloat() / total.toFloat())
+
+                            // Rebuild market data periodically
+                            if (done % 5 == 0 || done == total) {
+                                synchronized(tokenDexData) {
+                                    allTokenMarketData = tokenDexData.keys.mapNotNull { computeMarketData(it) }
+                                        .sortedByDescending { it.volume7dErg }
+                                }
+                            }
+                        }
+                    }
+                }.awaitAll()
+            }
+
+            // Final rebuild
+            allTokenMarketData = tokenDexData.keys.mapNotNull { computeMarketData(it) }
+                .sortedByDescending { it.volume7dErg }
+
+            // All tokens done — reset resume index for next full cycle
+            prefs.edit().putInt("allTokenResumeIndex", 0).apply()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (BuildConfig.DEBUG) Log.d(TAG, "syncAllTokens failed: ${e.message}")
+        } finally {
+            isSyncingAllTokens = false
+            allTokenSyncLabel = ""
+            allTokenSyncProgress = -1f
+            allTokenSyncIndex = 0
+            allTokenSyncTotal = 0
         }
     }
 
@@ -526,6 +887,7 @@ class OraclePriceStore(private val context: Context) {
         sigUsdOracle = PriceHistory()
         sigUsdDex = PriceHistory()
         tokenDexData.clear()
+        allTokenMarketData = emptyList()
         currentHeight = 0
         isFirstSync = true
         if (BuildConfig.DEBUG) Log.d(TAG, "Cleared all oracle data")
@@ -545,7 +907,17 @@ class OraclePriceStore(private val context: Context) {
                 val obj = arr.getJSONObject(i)
                 prices.add(PricePoint(obj.getInt("h"), obj.getDouble("p")))
             }
-            return PriceHistory(lastHeight, prices)
+            val volumes = mutableListOf<VolumePoint>()
+            val volArr = json.optJSONArray("volumes")
+            if (volArr != null) {
+                for (i in 0 until volArr.length()) {
+                    val obj = volArr.getJSONObject(i)
+                    volumes.add(VolumePoint(obj.getInt("h"), obj.getDouble("v")))
+                }
+            }
+            val complete = json.optBoolean("syncComplete", false)
+            val scanOffset = json.optInt("lastScanOffset", 0)
+            return PriceHistory(lastHeight, prices, volumes, complete, scanOffset)
         } catch (e: Exception) {
             if (BuildConfig.DEBUG) Log.d(TAG, "Load $filename failed: ${e.message}")
             return PriceHistory()
@@ -558,9 +930,16 @@ class OraclePriceStore(private val context: Context) {
             for (p in history.prices) {
                 arr.put(JSONObject().put("h", p.height).put("p", p.price))
             }
+            val volArr = JSONArray()
+            for (v in history.volumes) {
+                volArr.put(JSONObject().put("h", v.height).put("v", v.ergDelta))
+            }
             val json = JSONObject()
                 .put("lastHeight", history.lastHeight)
+                .put("syncComplete", history.syncComplete)
+                .put("lastScanOffset", history.lastScanOffset)
                 .put("prices", arr)
+                .put("volumes", volArr)
             File(context.filesDir, filename).writeText(json.toString())
         } catch (e: Exception) {
             if (BuildConfig.DEBUG) Log.d(TAG, "Save $filename failed: ${e.message}")

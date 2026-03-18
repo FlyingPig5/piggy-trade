@@ -36,6 +36,18 @@ fun MainScreen(
     onSubmit: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
+
+    // Re-trigger sync when app returns to foreground (e.g. phone screen off/on)
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                viewModel.syncOraclePrices()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     
     // Validation Logic for Swap Button
     val fromAmountValue = uiState.fromAmount.replace(",", ".").toDoubleOrNull() ?: 0.0

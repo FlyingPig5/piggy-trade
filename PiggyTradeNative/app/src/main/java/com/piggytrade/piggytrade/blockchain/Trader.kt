@@ -86,7 +86,6 @@ class Trader(
                     
                     Pair(formatReadable(readableOut, decimals), priceImpact)
                 } else {
-                    // Sell
                     val tokenAmt = amountDec.multiply(BigDecimal.TEN.pow(decimals)).toLong()
                     val (ergOut, _, _, _) = Amm.sellToken(tokenAmt, poolNanoerg, poolTokenBal)
                     val feeMult = BigDecimal.ONE.subtract(BigDecimal.valueOf(fee))
@@ -133,7 +132,6 @@ class Trader(
                     
                     Pair(formatReadable(readableOut, decY), priceImpact)
                 } else {
-                    // Buy
                     val amtInY = amountDec.multiply(BigDecimal.TEN.pow(decY))
                     val deltaX = Amm.tokenForToken(amtInY, BigDecimal.valueOf(poolBalY), BigDecimal.valueOf(poolBalX), BigDecimal.valueOf(fee))
                     val readableOut = deltaX.divide(BigDecimal.TEN.pow(decX), decX, RoundingMode.HALF_UP)
@@ -188,7 +186,6 @@ class Trader(
         val tokenPid = cfg["pid"] as? String ?: ""
         val lpId = cfg["lp"] as? String ?: ""
         
-        // Fetch pool box
         val poolBox = client.getPoolBox(tokenPid, includeUnconfirmed) ?: throw IllegalArgumentException("Pool box for ${poolKey} not found")
         
         var lpSwapBox: Map<String, Any>? = null
@@ -198,7 +195,6 @@ class Trader(
             lpSwapBox = client.getPoolBox(lpNftId, includeUnconfirmed) ?: throw IllegalArgumentException("${poolKey.uppercase()} LP Swap Box not found!")
         }
         
-        // Fetch user assets — use pre-fetched multi-address boxes or single address
         val myAssets: Map<String, Long>
         val myNanoerg: Long
         val userBoxes: List<Map<String, Any>>
@@ -332,7 +328,6 @@ class Trader(
             nodeParity += (d[i].code.xor(key[i % key.length].code)).toChar()
         }
  
-        // Recompute total assets/nanoergs from selected user boxes
         var selectedNanoerg = 0L
         val selectedAssets = mutableMapOf<String, Long>()
         for (box in userBoxes) {

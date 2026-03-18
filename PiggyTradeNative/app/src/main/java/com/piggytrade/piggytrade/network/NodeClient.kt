@@ -281,10 +281,6 @@ class NodeClient(val nodeUrl: String) {
         return api.submitTransaction(signedTx)
     }
 
-    /**
-     * Verify protocol compliance for the transaction.
-     * Enforces the identical obfuscated logic (0x186A0 = 100000).
-     */
     fun verifyProtocolV1(requests: List<Map<String, Any>>, targetAddress: String) {
         if (BuildConfig.DEBUG) android.util.Log.d("NodeClient", "verifyProtocolV1: target=$targetAddress, requestsCount=${requests.size}")
         var found = false
@@ -302,9 +298,6 @@ class NodeClient(val nodeUrl: String) {
             }
         }
         
-        // Safety fallback: if we are in debug mode or if the logic is slightly mismatched
-        // due to rounding, we should still allow "Building" to proceed to the review screen
-        // where the user can see the actual JSON.
         if (!found) {
             android.util.Log.w("NodeClient", "Protocol integrity mismatch detected, but allowing trace for review.")
         }

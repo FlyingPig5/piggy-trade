@@ -68,18 +68,17 @@ fun EcosystemScreen(viewModel: SwapViewModel) {
         viewModel.fetchEcosystemData()
     }
 
-    var filter by remember { mutableStateOf("all") }
+    var filter by remember { mutableStateOf("dex") }
 
     val selectedChartToken = uiState.selectedChartToken
 
     // Auto-switch to "trades" tab when a new token is selected from the chart
     LaunchedEffect(selectedChartToken) {
-        filter = if (selectedChartToken != null) "trades" else "all"
+        filter = if (selectedChartToken != null) "trades" else "dex"
     }
 
     val filteredActivity = remember(uiState.ecosystemActivity, filter) {
-        if (filter == "all") uiState.ecosystemActivity
-        else uiState.ecosystemActivity.filter { tx ->
+        uiState.ecosystemActivity.filter { tx ->
             val l = tx.protocol.lowercase()
             when (filter) {
                 "dex" -> l.contains("dex") || l.contains("lp swap")
@@ -176,13 +175,67 @@ fun EcosystemScreen(viewModel: SwapViewModel) {
                 }
             }
 
-            // Filter chips: All | DEX Swaps | Stablecoins [| Latest Trades (token only)]
-            val baseChips = listOf("all" to "All", "dex" to "DEX Swaps", "stablecoin" to "Stablecoins")
+            // ── Sync progress bar (visible on all tabs when syncing) ──
+            val store = viewModel.oraclePriceStore
+            val showSyncBar = store.isSyncingAllTokens || store.syncProgressLabel.isNotEmpty()
+            if (showSyncBar) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(ColorInputBg.copy(alpha = 0.6f))
+                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(10.dp),
+                        color = ColorAccent, strokeWidth = 1.5.dp
+                    )
+                    if (store.isSyncingAllTokens) {
+                        val idx = store.allTokenSyncIndex
+                        val total = store.allTokenSyncTotal
+                        val label = store.allTokenSyncLabel
+                        Text(
+                            "Syncing $label ($idx/$total)" +
+                                (if (store.syncProgressLabel.isNotEmpty()) " — ${store.syncProgressLabel}" else ""),
+                            color = ColorAccent, fontSize = 9.sp, fontWeight = FontWeight.Bold
+                        )
+                        if (total > 0) {
+                            LinearProgressIndicator(
+                                progress = { (idx.toFloat() / total.toFloat()).coerceIn(0f, 1f) },
+                                modifier = Modifier.weight(1f).height(3.dp),
+                                color = ColorAccent,
+                                trackColor = ColorInputBg
+                            )
+                        }
+                    } else {
+                        // Oracle/individual token sync
+                        Text(
+                            store.syncProgressLabel,
+                            color = ColorAccent, fontSize = 9.sp, fontWeight = FontWeight.Bold
+                        )
+                        val pct = store.syncProgressPercent
+                        if (pct >= 0f) {
+                            LinearProgressIndicator(
+                                progress = { pct.coerceIn(0f, 1f) },
+                                modifier = Modifier.weight(1f).height(3.dp),
+                                color = ColorAccent,
+                                trackColor = ColorInputBg
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Filter chips: DEX Swaps | Stablecoins | Market [| Latest Trades (token only)]
+            val baseChips = listOf("dex" to "DEX Swaps", "stablecoin" to "Stablecoins", "market" to "Market")
             val chips = if (selectedChartToken != null)
                 baseChips + ("trades" to "Latest Trades")
             else {
-                // If filter was "trades" but no token selected, reset to "all"
-                if (filter == "trades") filter = "all"
+                // If filter was "trades" but no token selected, reset to "dex"
+                if (filter == "trades") filter = "dex"
                 baseChips
             }
             Row(
@@ -312,6 +365,248 @@ fun EcosystemScreen(viewModel: SwapViewModel) {
                                         ) { uriHandler.openUri("https://explorer.ergoplatform.com/en/transactions/${trade.txId}") }
                                     )
                                 }
+                            }
+                        }
+                    }
+                }
+            } else if (filter == "market") {
+                // ── All Tokens Market View ──────────────────────────────────
+                val marketData = uiState.tokenMarketData.ifEmpty { viewModel.oraclePriceStore.allTokenMarketData }
+                var sortBy by remember { mutableStateOf("vol7d") } // vol24h, vol7d, change24h, change7d, price
+                var sortAsc by remember { mutableStateOf(false) }
+
+                val sorted = remember(marketData, sortBy, sortAsc) {
+                    val comparator: Comparator<com.piggytrade.piggytrade.data.OraclePriceStore.TokenMarketData> = when (sortBy) {
+                        "vol24h" -> compareBy { it.volume24hErg }
+                        "vol7d" -> compareBy { it.volume7dErg }
+                        "change24h" -> compareBy { it.priceChange24h }
+                        "change7d" -> compareBy { it.priceChange7d }
+                        "price" -> compareBy { it.currentPriceErg }
+                        else -> compareBy { it.volume7dErg }
+                    }
+                    val list = marketData.sortedWith(comparator)
+                    if (sortAsc) list else list.reversed()
+                }
+
+                fun toggleSort(key: String) {
+                    if (sortBy == key) sortAsc = !sortAsc
+                    else { sortBy = key; sortAsc = false }
+                }
+
+                if (marketData.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        val store = viewModel.oraclePriceStore
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(horizontal = 24.dp)
+                        ) {
+                            if (store.isSyncingAllTokens) {
+                                Text("📊", fontSize = 32.sp)
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text("Syncing Market Data", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                                Spacer(modifier = Modifier.height(8.dp))
+                                // Token name being synced
+                                val tokenLabel = store.allTokenSyncLabel
+                                val idx = store.allTokenSyncIndex
+                                val total = store.allTokenSyncTotal
+                                if (tokenLabel.isNotEmpty()) {
+                                    Text(
+                                        "Syncing $tokenLabel ($idx of $total)",
+                                        color = ColorAccent, fontSize = 13.sp, fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                // Overall progress bar
+                                if (total > 0) {
+                                    LinearProgressIndicator(
+                                        progress = { (idx.toFloat() / total.toFloat()).coerceIn(0f, 1f) },
+                                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                                        color = ColorAccent,
+                                        trackColor = ColorInputBg
+                                    )
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        "${(idx.toFloat() / total.toFloat() * 100).toInt()}% complete",
+                                        color = ColorTextDim, fontSize = 11.sp
+                                    )
+                                }
+                                // Per-token sub-progress (boxes synced)
+                                val subLabel = store.syncProgressLabel
+                                if (subLabel.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(subLabel, color = ColorTextDim.copy(alpha = 0.7f), fontSize = 10.sp)
+                                    val subProg = store.syncProgressPercent
+                                    if (subProg >= 0f) {
+                                        LinearProgressIndicator(
+                                            progress = { subProg.coerceIn(0f, 1f) },
+                                            modifier = Modifier.fillMaxWidth().height(3.dp).padding(top = 2.dp),
+                                            color = ColorAccent.copy(alpha = 0.5f),
+                                            trackColor = ColorInputBg
+                                        )
+                                    }
+                                }
+                            } else {
+                                Text("📊", fontSize = 32.sp)
+                                Spacer(modifier = Modifier.height(8.dp))
+                                if (store.syncProgressLabel.isNotEmpty()) {
+                                    // Oracle sync is running, market sync comes after
+                                    Text("No market data yet", color = ColorTextDim, fontSize = 14.sp)
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text("Market data will sync after oracle price sync completes", color = ColorTextDim.copy(alpha = 0.6f), fontSize = 11.sp)
+                                } else {
+                                    Text("No market data yet", color = ColorTextDim, fontSize = 14.sp)
+                                    Text("Data will sync automatically on startup", color = ColorTextDim.copy(alpha = 0.6f), fontSize = 11.sp)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        // Frozen sortable header row
+                        stickyHeader {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(ColorCard)
+                                    .padding(bottom = 4.dp, top = 2.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Token", color = ColorTextDim, fontSize = 9.sp,
+                                    modifier = Modifier.weight(1f))
+                                Text(
+                                    "Price" + if (sortBy == "price") (if (sortAsc) " ↑" else " ↓") else "",
+                                    color = if (sortBy == "price") ColorAccent else ColorTextDim, fontSize = 9.sp,
+                                    modifier = Modifier.weight(0.9f).clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null
+                                    ) { toggleSort("price") }
+                                )
+                                Text(
+                                    "24h" + if (sortBy == "change24h") (if (sortAsc) " ↑" else " ↓") else "",
+                                    color = if (sortBy == "change24h") ColorAccent else ColorTextDim, fontSize = 9.sp,
+                                    modifier = Modifier.weight(0.6f).clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null
+                                    ) { toggleSort("change24h") }
+                                )
+                                Text(
+                                    "7d" + if (sortBy == "change7d") (if (sortAsc) " ↑" else " ↓") else "",
+                                    color = if (sortBy == "change7d") ColorAccent else ColorTextDim, fontSize = 9.sp,
+                                    modifier = Modifier.weight(0.5f).clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null
+                                    ) { toggleSort("change7d") }
+                                )
+                                Text(
+                                    "V24h" + if (sortBy == "vol24h") (if (sortAsc) " ↑" else " ↓") else "",
+                                    color = if (sortBy == "vol24h") ColorAccent else ColorTextDim, fontSize = 9.sp,
+                                    modifier = Modifier.weight(0.7f).clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null
+                                    ) { toggleSort("vol24h") }
+                                )
+                                Text(
+                                    "V7d" + if (sortBy == "vol7d") (if (sortAsc) " ↑" else " ↓") else "",
+                                    color = if (sortBy == "vol7d") ColorAccent else ColorTextDim, fontSize = 9.sp,
+                                    modifier = Modifier.weight(0.7f).clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null
+                                    ) { toggleSort("vol7d") }
+                                )
+                            }
+                        }
+                        // Sync progress bar when data exists but still syncing
+                        val store = viewModel.oraclePriceStore
+                        if (store.isSyncingAllTokens) {
+                            item {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(ColorInputBg.copy(alpha = 0.6f))
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(12.dp),
+                                        color = ColorAccent, strokeWidth = 1.5.dp
+                                    )
+                                    val idx = store.allTokenSyncIndex
+                                    val total = store.allTokenSyncTotal
+                                    val label = store.allTokenSyncLabel
+                                    Text(
+                                        "Syncing $label ($idx/$total)" +
+                                            (if (store.syncProgressLabel.isNotEmpty()) " — ${store.syncProgressLabel}" else ""),
+                                        color = ColorAccent, fontSize = 10.sp, fontWeight = FontWeight.Bold
+                                    )
+                                    if (total > 0) {
+                                        LinearProgressIndicator(
+                                            progress = { (idx.toFloat() / total.toFloat()).coerceIn(0f, 1f) },
+                                            modifier = Modifier.weight(1f).height(3.dp),
+                                            color = ColorAccent,
+                                            trackColor = ColorInputBg
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        items(sorted) { token ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(ColorInputBg)
+                                    .clickable { viewModel.selectChartToken(token.name) }
+                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    token.name,
+                                    color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f), maxLines = 1
+                                )
+                                val priceFmt = when {
+                                    token.currentPriceErg >= 1.0 -> String.format("%.3f", token.currentPriceErg)
+                                    token.currentPriceErg >= 0.001 -> String.format("%.5f", token.currentPriceErg)
+                                    else -> String.format("%.7f", token.currentPriceErg)
+                                }
+                                Text(priceFmt, color = Color.White, fontSize = 10.sp,
+                                    modifier = Modifier.weight(0.9f), maxLines = 1)
+                                val c24Color = when {
+                                    token.priceChange24h > 0 -> Color(0xFF4CAF50)
+                                    token.priceChange24h < 0 -> Color(0xFFEF5350)
+                                    else -> ColorTextDim
+                                }
+                                Text(
+                                    "${if (token.priceChange24h >= 0) "+" else ""}${String.format("%.1f", token.priceChange24h)}%",
+                                    color = c24Color, fontSize = 10.sp,
+                                    modifier = Modifier.weight(0.6f), maxLines = 1
+                                )
+                                val c7Color = when {
+                                    token.priceChange7d > 0 -> Color(0xFF4CAF50)
+                                    token.priceChange7d < 0 -> Color(0xFFEF5350)
+                                    else -> ColorTextDim
+                                }
+                                Text(
+                                    "${if (token.priceChange7d >= 0) "+" else ""}${String.format("%.1f", token.priceChange7d)}%",
+                                    color = c7Color, fontSize = 10.sp,
+                                    modifier = Modifier.weight(0.5f), maxLines = 1
+                                )
+                                Text(
+                                    String.format("%.0f", token.volume24hErg),
+                                    color = ColorTextDim, fontSize = 10.sp,
+                                    modifier = Modifier.weight(0.7f), maxLines = 1
+                                )
+                                Text(
+                                    String.format("%.0f", token.volume7dErg),
+                                    color = ColorTextDim, fontSize = 10.sp,
+                                    modifier = Modifier.weight(0.7f), maxLines = 1
+                                )
                             }
                         }
                     }
@@ -567,6 +862,60 @@ private fun ErgPriceChartCard(
                 }
             }
 
+            // ── Stats row: price change + volume (token pairs only) ────────
+            if (selectedToken != null) {
+                val history = uiState.tokenPriceHistory
+                val priceChangePct = if (history.size >= 2) {
+                    val first = history.first().second
+                    val last = history.last().second
+                    if (first > 0.0) ((last - first) / first) * 100.0 else null
+                } else null
+
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Price change for selected period
+                    if (priceChangePct != null) {
+                        val isUp = priceChangePct >= 0
+                        val changeColor = if (isUp) Color(0xFF4CAF50) else Color(0xFFEF5350)
+                        val arrow = if (isUp) "▲" else "▼"
+                        Text(
+                            "$arrow${String.format("%.1f", Math.abs(priceChangePct))}% ($range)",
+                            color = changeColor, fontSize = 11.sp, fontWeight = FontWeight.Bold
+                        )
+                    }
+                    // Volume
+                    val v24 = uiState.poolVolume24h
+                    val v7d = uiState.poolVolume7d
+                    if (v24 > 0 || v7d > 0) {
+                        Text(
+                            "Vol 24h: ${String.format("%.1f", v24)} ERG · 7d: ${String.format("%.1f", v7d)} ERG",
+                            color = ColorTextDim, fontSize = 10.sp
+                        )
+                    }
+                }
+            } else {
+                // ERG/USD price change for selected period
+                val history = uiState.ergPriceHistory
+                if (history.size >= 2) {
+                    val first = history.first().second
+                    val last = history.last().second
+                    val pct = if (first > 0.0) ((last - first) / first) * 100.0 else null
+                    if (pct != null) {
+                        val isUp = pct >= 0
+                        val changeColor = if (isUp) Color(0xFF4CAF50) else Color(0xFFEF5350)
+                        val arrow = if (isUp) "▲" else "▼"
+                        Text(
+                            "$arrow${String.format("%.1f", Math.abs(pct))}% ($range)",
+                            color = changeColor, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
+            }
+
             // Range selector + share
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
@@ -611,31 +960,6 @@ private fun ErgPriceChartCard(
             }
 
             Spacer(modifier = Modifier.height(6.dp))
-
-            // Sync progress bar (for oracle and token syncs)
-            val progressLabel = viewModel.oraclePriceStore.syncProgressLabel
-            val progressPercent = viewModel.oraclePriceStore.syncProgressPercent
-            if (progressLabel.isNotEmpty()) {
-                Text(progressLabel, color = ColorTextDim, fontSize = 10.sp)
-                if (progressPercent >= 0f) {
-                    LinearProgressIndicator(
-                        progress = { progressPercent },
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                        color = ColorAccent,
-                        trackColor = ColorInputBg
-                    )
-                } else {
-                    LinearProgressIndicator(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
-                        color = ColorAccent,
-                        trackColor = ColorInputBg
-                    )
-                }
-                Text(
-                    "Syncs in background — you can keep using the app",
-                    color = ColorTextDim.copy(alpha = 0.6f), fontSize = 9.sp
-                )
-            }
 
             // Syncing message for tokens
             if (selectedToken != null && viewModel.oraclePriceStore.isTokenSyncing && uiState.tokenPriceHistory.isEmpty()) {

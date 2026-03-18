@@ -2,12 +2,24 @@ package com.piggytrade.piggytrade.protocol
 
 object NetworkConfig {
     val NODES = mapOf(
-        "Public1" to mapOf("url" to "https://ergo-node.eutxo.de"),
-        "Public2" to mapOf("url" to "https://ergo-node-5.eutxo.de/"),
-        "Public3" to mapOf("url" to "https://ergo1.oette.info"),
-        "Public4" to mapOf("url" to "https://ergo2.oette.info"),
-        "Public5" to mapOf("url" to "https://node.sigmaspace.io"),
-        "Public6" to mapOf("url" to "https://node.ergo.watch"),
+        "Public1"  to mapOf("url" to "https://ergo-node.eutxo.de"),
+        "Public2"  to mapOf("url" to "https://ergo-node-1.eutxo.de"),
+        "Public3"  to mapOf("url" to "https://ergo-node-2.eutxo.de"),
+        "Public4"  to mapOf("url" to "https://ergo-node-3.eutxo.de"),
+        "Public5"  to mapOf("url" to "https://ergo-node-5.eutxo.de"),
+        "Public6"  to mapOf("url" to "https://ergo-node-8.eutxo.de"),
+        "Public7"  to mapOf("url" to "https://ergo-node-11.eutxo.de"),
+        "Public8"  to mapOf("url" to "https://ergo-node-13.eutxo.de"),
+        "Public9"  to mapOf("url" to "https://ergo-node-14.eutxo.de"),
+        "Public10" to mapOf("url" to "https://ergo-node-18.eutxo.de"),
+        "Public11" to mapOf("url" to "https://ergo-node-19.eutxo.de"),
+        "Public12" to mapOf("url" to "https://ergo1.oette.info"),
+        "Public13" to mapOf("url" to "https://ergo2.oette.info"),
+        "Public14" to mapOf("url" to "https://node.sigmaspace.io"),
+        "Public15" to mapOf("url" to "https://ergonode.blockpow.io"),
+        "Public16" to mapOf("url" to "https://ergo.getblok.io"),
+        "Public17" to mapOf("url" to "https://80.209.232.82:9053"),
+        "Public18" to mapOf("url" to "https://bp.lakecardano.com:9053"),
     )
 
     const val SPECTRUM_ADDRESS = "5vSUZRZbdVbnk4sJWjg2uhL94VZWRg4iatK9VgMChufzUgdihgvhR8yWSUEJKszzV7Vmi6K8hCyKTNhUaiP8p5ko6YEU9yfHpjVuXdQ4i5p4cRCzch6ZiqWrNukYjv7Vs5jvBwqg5hcEJ8u1eerr537YLWUoxxi1M4vQxuaCihzPKMt8NDXP4WcbN6mfNxxLZeGBvsHVvVmina5THaECosCWozKJFBnscjhpr3AJsdaL8evXAvPfEjGhVMoTKXAb2ZGGRmR8g1eZshaHmgTg2imSiaoXU5eiF3HvBnDuawaCtt674ikZ3oZdekqswcVPGMwqqUKVsGY4QuFeQoGwRkMqEYTdV2UDMMsfrjrBYQYKUBFMwsQGMNBL1VoY78aotXzdeqJCBVKbQdD3ZZWvukhSe4xrz8tcF3PoxpysDLt89boMqZJtGEHTV9UBTBEac6sDyQP693qT3nKaErN8TCXrJBUmHPqKozAg9bwxTqMYkpmb9iVKLSoJxG7MjAj72SRbcqQfNCVTztSwN3cRxSrVtz4p87jNFbVtFzhPg7UqDwNFTaasySCqM"
