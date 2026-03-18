@@ -8,6 +8,8 @@ Open-source crypto trading app for the **Ergo blockchain** on Android — swap t
 > **BETA SOFTWARE**: PiggyTrade is currently in beta. Always verify all transaction details and output amounts before confirming. Use at your own risk!
 >
 > As an **Open Source** project, the community is invited to audit the code for vulnerabilities. Transparency is key to building a secure tool for everyone.
+>
+> 🔍 The codebase has been passed through **Claude Opus**, one of the most capable AI coding models available, for a comprehensive security assessment. Read the full report: [Security_Audit.md](Security_Audit.md)
 
 ---
 
