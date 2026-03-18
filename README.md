@@ -69,8 +69,11 @@ Import a mnemonic and the app automatically scans your derivation path to find *
 
 **Stablecoin Mints & Redeems (Bank)**
 
-| Protocol | Protocol Fee |
-| App fee (all stablecoins) | 0.1% of transaction value | (1 ERG per 1k ERG)
+| Protocol | Fee |
+|---|---|
+| SigmaUSD / SigRSV | 2% (AgeUSD on-chain protocol fee) |
+| USE / DexyGold | 0.5% (0.3% bank + 0.2% buyback) |
+| App fee | 0.1% of transaction value |
 
 ---
 
