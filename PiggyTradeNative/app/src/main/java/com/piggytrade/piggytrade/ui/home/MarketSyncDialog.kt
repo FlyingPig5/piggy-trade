@@ -43,6 +43,23 @@ fun MarketSyncDialog(
     val syncLabel = store.allTokenSyncLabel
     val syncState = uiState.marketSyncState
 
+    // Track whether the sync completed while THIS dialog was open
+    // (vs. "completed" persisted from a previous session)
+    var syncJustCompleted by remember { mutableStateOf(false) }
+    var wasEverSyncing by remember { mutableStateOf(syncState == "syncing") }
+
+    LaunchedEffect(syncState) {
+        if (syncState == "syncing") wasEverSyncing = true
+        if (syncState == "completed" && wasEverSyncing) syncJustCompleted = true
+    }
+
+    // Effective display state: only show "completed" if it just finished here
+    val displayState = when {
+        syncState == "syncing" -> "syncing"
+        syncJustCompleted -> "completed"
+        else -> "idle"
+    }
+
     // Auto-start sync only for first sync or incomplete — NOT when already completed
     LaunchedEffect(Unit) {
         if (syncState != "syncing" && (isFirstSync || uiState.marketSyncIncomplete)) {
@@ -93,8 +110,8 @@ fun MarketSyncDialog(
                 Text(
                     text = when {
                         isFirstSync -> "The app needs to sync market data from the blockchain. This will take a few minutes."
-                        syncState == "completed" -> "Sync complete! All token prices and volumes are up to date."
-                        syncState == "syncing" -> "Syncing market data. You can continue in the background or stop and resume later."
+                        displayState == "completed" -> "Sync complete! All token prices and volumes are up to date."
+                        displayState == "syncing" -> "Syncing market data. You can continue in the background or stop and resume later."
                         uiState.marketSyncIncomplete -> "Previous sync was interrupted. Tap Sync Now to continue where you left off."
                         minutesSinceSync in 0..29 -> "Prices were synced ${minutesSinceSync}m ago. Re-sync to get the latest data?"
                         minutesSinceSync in 30..59 -> "Prices are ${minutesSinceSync}m old. Would you like to refresh?"
@@ -114,7 +131,7 @@ fun MarketSyncDialog(
                     modifier = Modifier.size(100.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    if (syncState == "syncing" && isSyncing) {
+                    if (displayState == "syncing" && isSyncing) {
                         CircularProgressIndicator(
                             progress = { if (syncTotal > 0) (syncIndex.toFloat() / syncTotal).coerceIn(0f, 1f) else 0f },
                             modifier = Modifier.fillMaxSize(),
@@ -135,7 +152,7 @@ fun MarketSyncDialog(
                                 fontSize = 11.sp
                             )
                         }
-                    } else if (syncState == "completed") {
+                    } else if (displayState == "completed") {
                         Box(
                             modifier = Modifier
                                 .size(60.dp)
@@ -146,8 +163,8 @@ fun MarketSyncDialog(
                         ) {
                             Text("✓", color = ColorAccent, fontSize = 28.sp, fontWeight = FontWeight.Bold)
                         }
-                    } else if (syncState == "idle" && !isFirstSync && !uiState.marketSyncIncomplete) {
-                        // Already synced — show a sync icon instead of spinner
+                    } else if (!isFirstSync && !uiState.marketSyncIncomplete) {
+                        // Idle — show a sync icon
                         Box(
                             modifier = Modifier
                                 .size(60.dp)
@@ -171,7 +188,7 @@ fun MarketSyncDialog(
                 Spacer(Modifier.height(12.dp))
 
                 // Current token label
-                if (syncState == "syncing" && syncLabel.isNotEmpty()) {
+                if (displayState == "syncing" && syncLabel.isNotEmpty()) {
                     Text(
                         text = "Syncing: $syncLabel",
                         color = ColorAccent,
@@ -182,7 +199,7 @@ fun MarketSyncDialog(
                 }
 
                 // Progress bar
-                if (syncState == "syncing" && syncTotal > 0) {
+                if (displayState == "syncing" && syncTotal > 0) {
                     LinearProgressIndicator(
                         progress = { (syncIndex.toFloat() / syncTotal).coerceIn(0f, 1f) },
                         modifier = Modifier
@@ -202,7 +219,7 @@ fun MarketSyncDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    when (syncState) {
+                    when (displayState) {
                         "syncing" -> {
                             // Continue in Background
                             Button(
