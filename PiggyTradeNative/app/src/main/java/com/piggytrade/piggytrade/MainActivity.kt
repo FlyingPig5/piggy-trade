@@ -25,12 +25,28 @@ class MainActivity : FragmentActivity() {
             val uiState by viewModel.uiState.collectAsState()
             var currentScreen by remember { mutableStateOf("main") }
             var selectedWalletForInfo by remember { mutableStateOf("") }
+            var qrScanRecipientIndex by remember { mutableIntStateOf(0) }
+            var sendTokenRecipientIndex by remember { mutableIntStateOf(0) }
+
+            // Handle ergopay: deep link on launch
+            LaunchedEffect(Unit) {
+                intent?.data?.let { uri ->
+                    if (uri.scheme == "ergopay") {
+                        viewModel.handleErgoPayUrl(uri.toString())
+                        currentScreen = "ergopay_review"
+                    }
+                }
+            }
 
             BackHandler(enabled = currentScreen != "main") {
                 currentScreen = when (currentScreen) {
                     "add_node" -> "settings"
                     "manage_pairs" -> "settings"
-                    "token_selector", "wallet_selector", "add_wallet", "wallet_info", "review_tx", "settings" -> "main"
+                    "send_review" -> "send"
+                    "qr_scanner" -> "send"
+                    "send_token_selector" -> "send"
+                    "ergopay_review" -> "main"
+                    "token_selector", "wallet_selector", "add_wallet", "wallet_info", "review_tx", "settings", "send" -> "main"
                     else -> "main"
                 }
             }
@@ -57,7 +73,11 @@ class MainActivity : FragmentActivity() {
                                 selectedWalletForInfo = wName
                                 currentScreen = "wallet_info"
                             },
-                            onSubmit = { currentScreen = "review_tx" }
+                            onSubmit = { currentScreen = "review_tx" },
+                            onNavigateToSend = {
+                                viewModel.clearSendState()
+                                currentScreen = "send"
+                            }
                         )
                         "review_tx" -> ReviewTxScreen(
                             viewModel = viewModel,
@@ -98,8 +118,103 @@ class MainActivity : FragmentActivity() {
                             walletName = selectedWalletForInfo,
                             viewModel = viewModel,
                             onBack = { currentScreen = "main" },
-                            onNavigateToAddWallet = { currentScreen = "add_wallet" }
+                            onNavigateToAddWallet = { currentScreen = "add_wallet" },
+                            onNavigateToSend = {
+                                viewModel.clearSendState()
+                                currentScreen = "send"
+                            }
                         )
+                        // ─── SEND FLOW ───
+                        "send" -> SendScreen(
+                            viewModel = viewModel,
+                            onBack = { currentScreen = "main" },
+                            onNavigateToQrScanner = { recipientIdx ->
+                                qrScanRecipientIndex = recipientIdx
+                                currentScreen = "qr_scanner"
+                            },
+                            onNavigateToTokenSelector = { recipientIdx ->
+                                sendTokenRecipientIndex = recipientIdx
+                                currentScreen = "send_token_selector"
+                            },
+                            onNavigateToReview = { currentScreen = "send_review" }
+                        )
+                        "send_review" -> SendReviewScreen(
+                            viewModel = viewModel,
+                            onBack = { currentScreen = "send" },
+                            onConfirm = { password, onResult ->
+                                if (uiState.sendReviewParams?.isErgopay == true) {
+                                    val url = uiState.sendReviewParams?.ergopayUrl
+                                    if (!url.isNullOrEmpty()) {
+                                        try {
+                                            val intent = android.content.Intent(
+                                                android.content.Intent.ACTION_VIEW,
+                                                android.net.Uri.parse(url)
+                                            )
+                                            this@MainActivity.startActivity(intent)
+                                            onResult(null)
+                                            viewModel.clearSendState()
+                                            currentScreen = "main"
+                                        } catch (e: Exception) {
+                                            onResult("No app found to handle ErgoPay intent")
+                                        }
+                                    } else {
+                                        onResult("Missing ErgoPay URL")
+                                    }
+                                } else {
+                                    viewModel.signAndBroadcastSend(
+                                        password = password,
+                                        context = this@MainActivity,
+                                        onSuccess = { onResult(null) },
+                                        onError = { err -> onResult(err) }
+                                    )
+                                }
+                            }
+                        )
+                        "qr_scanner" -> QrScannerScreen(
+                            onBack = { currentScreen = "send" },
+                            onAddressScanned = { address ->
+                                viewModel.setSendRecipientAddress(qrScanRecipientIndex, address)
+                                currentScreen = "send"
+                            },
+                            onErgoPayScanned = { url ->
+                                viewModel.handleErgoPayUrl(url)
+                                currentScreen = "ergopay_review"
+                            }
+                        )
+                        "ergopay_review" -> ErgoPayReviewScreen(
+                            viewModel = viewModel,
+                            ergoPayUrl = uiState.ergoPayIncomingUrl,
+                            onBack = {
+                                viewModel.clearSendState()
+                                currentScreen = "main"
+                            }
+                        )
+                        "send_token_selector" -> {
+                            // Show tokens the user holds for adding to a send recipient
+                            val heldTokenIds = uiState.walletTokens.keys.toList()
+                            val heldTokenNames = heldTokenIds.map { id ->
+                                viewModel.getTokenName(id)
+                            }
+                            SelectorScreen(
+                                title = "Add Token to Send",
+                                items = heldTokenNames,
+                                onSelect = { name ->
+                                    val tokenId = heldTokenIds.getOrNull(heldTokenNames.indexOf(name))
+                                    if (tokenId != null) {
+                                        viewModel.addSendToken(sendTokenRecipientIndex, tokenId)
+                                    }
+                                    currentScreen = "send"
+                                },
+                                onBack = { currentScreen = "send" },
+                                getName = { it },
+                                getId = { heldTokenIds.getOrNull(heldTokenNames.indexOf(it)) ?: it },
+                                getBalance = { name ->
+                                    val tokenId = heldTokenIds.getOrNull(heldTokenNames.indexOf(name)) ?: ""
+                                    viewModel.getUserBalance(name)
+                                },
+                                idLabel = "ID: "
+                            )
+                        }
                         "settings" -> SettingsScreen(
                             viewModel = viewModel,
                             onBack = { currentScreen = "main" },

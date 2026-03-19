@@ -93,6 +93,13 @@ dependencies {
     // Ergo Blockchain (Integrated as local source/jniLibs)
     // implementation(files("libs/ergo-lib-jni.aar"))
 
+    // QR Code Scanning
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+    implementation("androidx.camera:camera-core:1.4.1")
+    implementation("androidx.camera:camera-camera2:1.4.1")
+    implementation("androidx.camera:camera-lifecycle:1.4.1")
+    implementation("androidx.camera:camera-view:1.4.1")
+
     // Image Loading
     implementation(libs.coil.compose)
     implementation(libs.coil.svg)

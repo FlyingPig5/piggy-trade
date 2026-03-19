@@ -304,6 +304,7 @@ fun ReviewTxScreen(
                                         override fun onAuthenticationSucceeded(result: androidx.biometric.BiometricPrompt.AuthenticationResult) {
                                             isSigning = true
                                             errorText = ""
+                                            viewModel.setBiometricVerified(true)
                                             onConfirm("", resultHandler)
                                         }
                                         override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {

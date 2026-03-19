@@ -63,4 +63,30 @@ object WalletLib {
         contextExtensionsJson: String,
         derivationCount: Int
     ): String
+
+    /**
+     * Sign a reduced transaction (e.g. from an ErgoPay URL).
+     *
+     * @param reducedTxBase64 Base64-encoded ReducedTransaction bytes
+     * @param mnemonic BIP39 mnemonic
+     * @param mnemonicPass mnemonic password (empty string if none)
+     * @param derivationCount number of EIP-3 derivation indices to derive keys for
+     * @return JSON string of the signed Transaction
+     */
+    @JvmStatic external fun signReducedTxBytes(
+        reducedTxBase64: String,
+        mnemonic: String,
+        mnemonicPass: String,
+        derivationCount: Int
+    ): String
+
+    /**
+     * Parse a reduced transaction and return its details as JSON.
+     *
+     * @param reducedTxBase64 Base64-encoded ReducedTransaction bytes
+     * @return JSON string with inputs (box IDs), outputs (address, value, tokens)
+     */
+    @JvmStatic external fun parseReducedTxBytes(
+        reducedTxBase64: String
+    ): String
 }

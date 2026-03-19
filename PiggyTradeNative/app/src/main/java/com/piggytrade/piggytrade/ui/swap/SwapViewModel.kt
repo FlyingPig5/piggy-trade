@@ -117,6 +117,7 @@ data class SwapState(
     val marketSyncTotal: Int = 0,           // total tokens
     val lastMarketSyncMs: Long = 0L,        // timestamp of last completed sync
     val marketSyncIncomplete: Boolean = false, // true if sync was stopped before completion
+    val syncFailedCount: Int = 0,           // tokens that timed out in last sync
 
     // ─── ECOSYSTEM STATE ─────────────────────────────────────────────────
     val ecosystemTvl: Map<String, Double> = emptyMap(),       // protocol name -> ERG TVL
@@ -143,7 +144,17 @@ data class SwapState(
 
     // Cached block headers captured at TX build time.
     // CRITICAL: must be used at sign time so sigma-rust HEIGHT == the HEIGHT used to compute R4.
-    val cachedHeadersJson: String = ""
+    val cachedHeadersJson: String = "",
+
+    // ─── SEND STATE ──────────────────────────────────────────────────────
+    val sendRecipients: List<SendRecipientState> = listOf(SendRecipientState()),
+    val sendMinerFee: Double = 0.0011,
+    val isBuildingSendTx: Boolean = false,
+    val sendError: String? = null,
+    val sendReviewParams: SendReviewParams? = null,
+    val sendPreparedTxData: Map<String, Any>? = null,
+    val sendCachedHeadersJson: String = "",
+    val ergoPayIncomingUrl: String = ""
 )
 
 data class PoolMapping(
@@ -230,6 +241,28 @@ data class ReviewParams(
     val minerFee: Double,
     val serviceFee: Double,
     val isSimulation: Boolean,
+    val isErgopay: Boolean,
+    val ergopayUrl: String = ""
+)
+
+data class SendRecipientState(
+    val address: String = "",
+    val ergAmount: String = "",
+    val tokens: List<SendTokenState> = emptyList()
+)
+
+data class SendTokenState(
+    val tokenId: String = "",
+    val amount: String = ""
+)
+
+data class SendReviewParams(
+    val recipients: List<SendRecipientState>,
+    val minerFee: Double,
+    val totalErgOut: Double,
+    val totalTokensOut: Map<String, Long>,
+    val changeErg: Double,
+    val changeTokens: Map<String, Long>,
     val isErgopay: Boolean,
     val ergopayUrl: String = ""
 )
@@ -1419,6 +1452,16 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         return wallets[rawName] as? Map<String, Any>
     }
 
+    /** Return sorted list of signable wallet names (excludes ErgoPay-only wallets). */
+    fun getSignableWalletNames(): List<String> {
+        val wallets = preferenceManager.loadWallets()
+        return wallets.keys.filter { name ->
+            val data = wallets[name] as? Map<*, *> ?: return@filter false
+            // A wallet is signable if it has either encrypted mnemonic or device-encrypted mnemonic
+            data.containsKey("token") || data.containsKey("mnemonic_encrypted_device")
+        }.sorted()
+    }
+
     fun getWalletAddress(name: String): String {
         return getWalletData(name)?.get("address") as? String ?: ""
     }
@@ -1776,9 +1819,13 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                // Decrypt mnemonic
+                // Decrypt mnemonic — biometric gate enforced
             val useBiometrics = walletData["use_biometrics"] as? Boolean ?: false
             val mnemonic = if (useBiometrics) {
+                if (!_biometricVerified) {
+                    throw Exception("Biometric authentication required")
+                }
+                _biometricVerified = false // One-time use — must re-verify for next TX
                 val encrypted = walletData["mnemonic_encrypted_device"] as? String
                     ?: throw Exception("Missing biometric encrypted mnemonic")
                 com.piggytrade.piggytrade.crypto.DeviceEncryption.decrypt(encrypted)
@@ -1853,6 +1900,438 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+    }
+
+    // ─── SEND OPERATIONS ─────────────────────────────────────────────────
+
+    fun addSendRecipient() {
+        val current = _uiState.value
+        _uiState.value = current.copy(
+            sendRecipients = current.sendRecipients + SendRecipientState()
+        )
+    }
+
+    fun removeSendRecipient(index: Int) {
+        val current = _uiState.value
+        if (current.sendRecipients.size <= 1) return
+        _uiState.value = current.copy(
+            sendRecipients = current.sendRecipients.toMutableList().apply { removeAt(index) }
+        )
+    }
+
+    fun setSendRecipientAddress(index: Int, address: String) {
+        val current = _uiState.value
+        val recipients = current.sendRecipients.toMutableList()
+        if (index !in recipients.indices) return
+        recipients[index] = recipients[index].copy(address = address)
+        _uiState.value = current.copy(sendRecipients = recipients)
+    }
+
+    fun setSendRecipientAmount(index: Int, amount: String) {
+        val current = _uiState.value
+        val recipients = current.sendRecipients.toMutableList()
+        if (index !in recipients.indices) return
+        recipients[index] = recipients[index].copy(ergAmount = amount)
+        _uiState.value = current.copy(sendRecipients = recipients)
+    }
+
+    fun setSendMaxErg(index: Int) {
+        val current = _uiState.value
+        val totalAvailableErg = current.walletErgBalance
+        // Subtract fee + other recipients' amounts + dust for change
+        var otherErg = current.sendMinerFee
+        for ((i, r) in current.sendRecipients.withIndex()) {
+            if (i != index) {
+                otherErg += r.ergAmount.toDoubleOrNull() ?: 0.0
+            }
+        }
+        val max = (totalAvailableErg - otherErg - 0.001).coerceAtLeast(0.0) // Leave 0.001 for dust
+        val recipients = current.sendRecipients.toMutableList()
+        if (index !in recipients.indices) return
+        recipients[index] = recipients[index].copy(ergAmount = formatErg(max))
+        _uiState.value = current.copy(sendRecipients = recipients)
+    }
+
+    fun addSendToken(recipientIndex: Int, tokenId: String) {
+        val current = _uiState.value
+        val recipients = current.sendRecipients.toMutableList()
+        if (recipientIndex !in recipients.indices) return
+        val r = recipients[recipientIndex]
+        // Don't add duplicate token
+        if (r.tokens.any { it.tokenId == tokenId }) return
+        recipients[recipientIndex] = r.copy(tokens = r.tokens + SendTokenState(tokenId = tokenId))
+        _uiState.value = current.copy(sendRecipients = recipients)
+    }
+
+    fun removeSendToken(recipientIndex: Int, tokenIndex: Int) {
+        val current = _uiState.value
+        val recipients = current.sendRecipients.toMutableList()
+        if (recipientIndex !in recipients.indices) return
+        val r = recipients[recipientIndex]
+        if (tokenIndex !in r.tokens.indices) return
+        recipients[recipientIndex] = r.copy(
+            tokens = r.tokens.toMutableList().apply { removeAt(tokenIndex) }
+        )
+        _uiState.value = current.copy(sendRecipients = recipients)
+    }
+
+    fun setSendTokenAmount(recipientIndex: Int, tokenIndex: Int, amount: String) {
+        val current = _uiState.value
+        val recipients = current.sendRecipients.toMutableList()
+        if (recipientIndex !in recipients.indices) return
+        val r = recipients[recipientIndex]
+        if (tokenIndex !in r.tokens.indices) return
+        val tokens = r.tokens.toMutableList()
+        tokens[tokenIndex] = tokens[tokenIndex].copy(amount = amount)
+        recipients[recipientIndex] = r.copy(tokens = tokens)
+        _uiState.value = current.copy(sendRecipients = recipients)
+    }
+
+    fun setSendMaxToken(recipientIndex: Int, tokenIndex: Int) {
+        val current = _uiState.value
+        val recipients = current.sendRecipients
+        if (recipientIndex !in recipients.indices) return
+        val r = recipients[recipientIndex]
+        if (tokenIndex !in r.tokens.indices) return
+        val tokenId = r.tokens[tokenIndex].tokenId
+        val totalAvailable = current.walletTokens[tokenId] ?: 0L
+        // Subtract amounts allocated to other recipients for the same token
+        var otherAllocated = 0L
+        for ((i, rec) in recipients.withIndex()) {
+            for ((j, tok) in rec.tokens.withIndex()) {
+                if (tok.tokenId == tokenId && !(i == recipientIndex && j == tokenIndex)) {
+                    val dec = tokenRepository.getTokenDecimals(tokenId)
+                    val amt = tok.amount.toDoubleOrNull() ?: 0.0
+                    otherAllocated += (amt * Math.pow(10.0, dec.toDouble())).toLong()
+                }
+            }
+        }
+        val maxRaw = (totalAvailable - otherAllocated).coerceAtLeast(0L)
+        val display = formatBalance(tokenId, maxRaw)
+        val newRecipients = recipients.toMutableList()
+        val tokens = r.tokens.toMutableList()
+        tokens[tokenIndex] = tokens[tokenIndex].copy(amount = display)
+        newRecipients[recipientIndex] = r.copy(tokens = tokens)
+        _uiState.value = current.copy(sendRecipients = newRecipients)
+    }
+
+    fun setSendMinerFee(fee: Double) {
+        val roundedFee = java.math.BigDecimal(fee).setScale(9, java.math.RoundingMode.HALF_UP).toDouble()
+        _uiState.value = _uiState.value.copy(sendMinerFee = roundedFee)
+    }
+
+    fun prepareSendTx(onSuccess: () -> Unit, onError: (String) -> Unit) {
+        val current = _uiState.value
+        val addr = current.selectedAddress
+        if (addr.isEmpty()) {
+            onError("No wallet selected")
+            return
+        }
+
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isBuildingSendTx = true, sendError = null)
+            try {
+                val client = nodeClient ?: throw Exception("Node client not initialized")
+                val currentHeight = try { client.getHeight() } catch (e: Exception) { 0 }
+                val feeNano = (current.sendMinerFee * 1_000_000_000).toLong()
+                val changeAddr = current.changeAddress.ifEmpty { addr }
+
+                // Convert UI state to SendTxBuilder recipients
+                val recipients = current.sendRecipients.map { r ->
+                    val ergAmount = r.ergAmount.toDoubleOrNull()
+                        ?: throw Exception("Invalid ERG amount for ${r.address.take(8)}...")
+                    val nanoErg = (ergAmount * 1_000_000_000).toLong()
+                    val tokens = r.tokens.map { t ->
+                        val dec = tokenRepository.getTokenDecimals(t.tokenId)
+                        val rawAmt = (t.amount.toDoubleOrNull()
+                            ?: throw Exception("Invalid amount for token ${getTokenName(t.tokenId)}"))
+                        val amount = (rawAmt * Math.pow(10.0, dec.toDouble())).toLong()
+                        com.piggytrade.piggytrade.blockchain.SendTxBuilder.TokenAmount(t.tokenId, amount)
+                    }
+                    com.piggytrade.piggytrade.blockchain.SendTxBuilder.SendRecipient(
+                        address = r.address,
+                        nanoErg = nanoErg,
+                        tokens = tokens
+                    )
+                }
+
+                val sendBuilder = com.piggytrade.piggytrade.blockchain.SendTxBuilder(client)
+                val addressBoxMap = if (current.addressBoxes.isNotEmpty()) {
+                    current.addressBoxes
+                } else {
+                    val (_, _, boxes) = client.getMyAssets(addr, current.includeUnconfirmed)
+                    mapOf(addr to boxes)
+                }
+
+                val txDict = sendBuilder.buildSendTx(
+                    recipients = recipients,
+                    addressBoxes = addressBoxMap,
+                    changeAddress = changeAddr,
+                    feeNano = feeNano,
+                    currentHeight = currentHeight
+                )
+
+                // Calculate totals for review
+                var totalErgOut = 0.0
+                val totalTokensOut = mutableMapOf<String, Long>()
+                for (r in recipients) {
+                    totalErgOut += r.nanoErg.toDouble() / 1_000_000_000.0
+                    for (t in r.tokens) {
+                        totalTokensOut[t.tokenId] = (totalTokensOut[t.tokenId] ?: 0L) + t.amount
+                    }
+                }
+
+                // Calculate change from the txDict
+                val requests = txDict["requests"] as List<Map<String, Any>>
+                val changeRequest = requests.lastOrNull { (it["address"] as? String) == changeAddr }
+                val changeErg = ((changeRequest?.get("value") as? Number)?.toLong() ?: 0L).toDouble() / 1_000_000_000.0
+                val changeTokens = mutableMapOf<String, Long>()
+                val changeAssets = changeRequest?.get("assets") as? List<Map<String, Any>> ?: emptyList()
+                for (asset in changeAssets) {
+                    val tid = asset["tokenId"] as String
+                    val amt = (asset["amount"] as? Number)?.toLong() ?: 0L
+                    changeTokens[tid] = amt
+                }
+
+                val isErgopayWallet = current.selectedWallet.contains("ergopay", ignoreCase = true) || current.selectedWallet.isEmpty()
+
+                // Fetch block headers
+                val buildHeaders = client.api.getLastHeaders(10)
+                val buildHeadersJson = com.google.gson.Gson().toJson(buildHeaders)
+
+                var ergopayUrl = ""
+                if (isErgopayWallet) {
+                    try {
+                        val selNodeKey = current.nodes.getOrNull(current.selectedNodeIndex) ?: ""
+                        val nodeUrl = if (selNodeKey.contains(": ")) selNodeKey.substringAfter(": ") else "https://ergo-node.eutxo.de"
+                        val signer = com.piggytrade.piggytrade.blockchain.ErgoSigner(nodeUrl)
+                        ergopayUrl = signer.reduceTxForErgopay(txDict, changeAddr, buildHeadersJson)
+                    } catch (e: Exception) {
+                        android.util.Log.e(TAG, "ErgoPay URL generation failed: ${e.message}", e)
+                        throw Exception("ErgoPay generation failed: ${e.message}")
+                    }
+                }
+
+                val reviewParams = SendReviewParams(
+                    recipients = current.sendRecipients,
+                    minerFee = current.sendMinerFee,
+                    totalErgOut = totalErgOut,
+                    totalTokensOut = totalTokensOut,
+                    changeErg = changeErg,
+                    changeTokens = changeTokens,
+                    isErgopay = isErgopayWallet,
+                    ergopayUrl = ergopayUrl
+                )
+
+                _uiState.value = _uiState.value.copy(
+                    isBuildingSendTx = false,
+                    sendPreparedTxData = txDict,
+                    sendReviewParams = reviewParams,
+                    sendCachedHeadersJson = buildHeadersJson
+                )
+
+                launch { onSuccess() }
+            } catch (e: Exception) {
+                Log.e(TAG, "Send TX preparation failed", e)
+                _uiState.value = _uiState.value.copy(
+                    isBuildingSendTx = false,
+                    sendError = e.message ?: "Unknown error"
+                )
+                onError(e.message ?: "Unknown error")
+            }
+        }
+    }
+
+    /**
+     * Mark biometric authentication as verified. Called ONLY from UI after biometric success.
+     * Must be set before signAndBroadcastSend / signAndBroadcast for biometric wallets.
+     */
+    fun setBiometricVerified(verified: Boolean) {
+        _biometricVerified = verified
+    }
+    @Volatile
+    private var _biometricVerified = false
+
+    fun signAndBroadcastSend(
+        password: String,
+        context: android.content.Context,
+        onSuccess: (String) -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        val current = _uiState.value
+        val txDict = current.sendPreparedTxData ?: return
+        val walletData = getWalletData(current.selectedWallet) ?: return
+
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                // Decrypt mnemonic — biometric gate enforced
+                val useBiometrics = walletData["use_biometrics"] as? Boolean ?: false
+                val mnemonic = if (useBiometrics) {
+                    if (!_biometricVerified) {
+                        throw Exception("Biometric authentication required")
+                    }
+                    _biometricVerified = false // One-time use — must re-verify for next TX
+                    val encrypted = walletData["mnemonic_encrypted_device"] as? String
+                        ?: throw Exception("Missing biometric encrypted mnemonic")
+                    com.piggytrade.piggytrade.crypto.DeviceEncryption.decrypt(encrypted)
+                } else {
+                    val salt = walletData["salt"] as? String ?: throw Exception("Missing salt")
+                    val token = walletData["token"] as? String ?: throw Exception("Missing token")
+                    com.piggytrade.piggytrade.crypto.MnemonicEncryption.decrypt(
+                        com.piggytrade.piggytrade.crypto.MnemonicEncryption.EncryptedMnemonic(salt, token),
+                        password
+                    )
+                }
+
+                val client = nodeClient ?: throw Exception("Node client not initialized")
+                val selNodeKey = current.nodes.getOrNull(current.selectedNodeIndex) ?: ""
+                val nodeUrl = if (selNodeKey.contains(": ")) selNodeKey.substringAfter(": ") else "https://ergo-node.eutxo.de"
+                val signer = com.piggytrade.piggytrade.blockchain.ErgoSigner(nodeUrl)
+
+                val headersJson = current.sendCachedHeadersJson.ifBlank {
+                    Log.w(TAG, "No cached headers for send — falling back to fresh fetch.")
+                    com.google.gson.Gson().toJson(client.api.getLastHeaders(10))
+                }
+
+                val signAddr = current.selectedAddress
+                val signedJson = signer.signTransaction(
+                    txDict, signAddr, mnemonic, "", headersJson,
+                    addressCount = current.walletAddresses.size.coerceAtLeast(1)
+                )
+                val signedTxMap = signer.txGson.fromJson(signedJson, Map::class.java) as Map<String, Any>
+
+                val txId = try {
+                    client.api.submitTransaction(signedTxMap)
+                } catch (he: retrofit2.HttpException) {
+                    val errorBody = he.response()?.errorBody()?.string() ?: he.message()
+                    throw Exception("Node rejected tx: $errorBody")
+                }
+
+                _uiState.value = current.copy(
+                    txSuccessData = TxSuccessData(
+                        txId = txId,
+                        isSimulation = false,
+                        sigmaspaceUrl = "https://sigmaspace.io/tx/$txId",
+                        signedTxJson = signedJson
+                    )
+                )
+
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onSuccess(txId)
+                    launch {
+                        kotlinx.coroutines.delay(200)
+                        fetchWalletBalances(force = true)
+                        fetchTransactionHistory()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Send signing or broadcast failed", e)
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onError(e.message ?: "Unknown error")
+                }
+            }
+        }
+    }
+
+    fun handleErgoPayUrl(url: String) {
+        _uiState.value = _uiState.value.copy(ergoPayIncomingUrl = url)
+    }
+
+    /**
+     * Sign an incoming ErgoPay reduced transaction and broadcast it.
+     * Uses WalletLib.signReducedTxBytes (Rust JNI).
+     */
+    fun signAndBroadcastErgoPay(
+        reducedTxBase64: String,
+        password: String,
+        context: android.content.Context,
+        signingWallet: String = _uiState.value.selectedWallet,
+        onSuccess: (String) -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
+        val current = _uiState.value
+        val walletData = getWalletData(signingWallet) ?: run {
+            onError("Wallet '$signingWallet' not found")
+            return
+        }
+
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                // Decrypt mnemonic — biometric gate enforced
+                val useBiometrics = walletData["use_biometrics"] as? Boolean ?: false
+                val mnemonic = if (useBiometrics) {
+                    if (!_biometricVerified) {
+                        throw Exception("Biometric authentication required")
+                    }
+                    _biometricVerified = false
+                    val encrypted = walletData["mnemonic_encrypted_device"] as? String
+                        ?: throw Exception("Missing biometric encrypted mnemonic")
+                    com.piggytrade.piggytrade.crypto.DeviceEncryption.decrypt(encrypted)
+                } else {
+                    val salt = walletData["salt"] as? String ?: throw Exception("Missing salt")
+                    val token = walletData["token"] as? String ?: throw Exception("Missing token")
+                    com.piggytrade.piggytrade.crypto.MnemonicEncryption.decrypt(
+                        com.piggytrade.piggytrade.crypto.MnemonicEncryption.EncryptedMnemonic(salt, token),
+                        password
+                    )
+                }
+
+                // Sign the reduced transaction
+                val signedJson = org.ergoplatform.wallet.jni.WalletLib.signReducedTxBytes(
+                    reducedTxBase64,
+                    mnemonic,
+                    "", // mnemonic password
+                    current.walletAddresses.size.coerceAtLeast(1)
+                )
+
+                // Parse signed TX and submit
+                val signedTxMap = com.google.gson.Gson().fromJson(signedJson, Map::class.java) as Map<String, Any>
+                val client = nodeClient ?: throw Exception("Node client not initialized")
+
+                val txId = try {
+                    client.api.submitTransaction(signedTxMap)
+                } catch (he: retrofit2.HttpException) {
+                    val errorBody = he.response()?.errorBody()?.string() ?: he.message()
+                    throw Exception("Node rejected tx: $errorBody")
+                }
+
+                _uiState.value = current.copy(
+                    txSuccessData = TxSuccessData(
+                        txId = txId,
+                        isSimulation = false,
+                        sigmaspaceUrl = "https://sigmaspace.io/tx/$txId",
+                        signedTxJson = signedJson
+                    )
+                )
+
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onSuccess(txId)
+                    launch {
+                        kotlinx.coroutines.delay(200)
+                        fetchWalletBalances(force = true)
+                        fetchTransactionHistory()
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "ErgoPay signing or broadcast failed", e)
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    onError(e.message ?: "Unknown error")
+                }
+            }
+        }
+    }
+
+    fun clearSendState() {
+        _uiState.value = _uiState.value.copy(
+            sendRecipients = listOf(SendRecipientState()),
+            sendMinerFee = 0.0011,
+            isBuildingSendTx = false,
+            sendError = null,
+            sendReviewParams = null,
+            sendPreparedTxData = null,
+            sendCachedHeadersJson = "",
+            ergoPayIncomingUrl = ""
+        )
     }
 
     // ─── SYNC & DATA MANAGEMENT ──────────────────────────────────────────────
@@ -2630,14 +3109,16 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     .getSharedPreferences("oracle_sync", android.content.Context.MODE_PRIVATE)
                 prefs.edit().putLong("lastMarketSyncMs", now).apply()
 
+                val failedCount = oraclePriceStore.lastSyncFailedTokens.size
                 _uiState.value = _uiState.value.copy(
                     tokenMarketData = oraclePriceStore.allTokenMarketData,
                     marketSyncState = "completed",
                     marketSyncProgress = 1f,
                     lastMarketSyncMs = now,
-                    marketSyncIncomplete = false
+                    marketSyncIncomplete = false,
+                    syncFailedCount = failedCount
                 )
-                if (BuildConfig.DEBUG) Log.d(TAG, "Market sync completed")
+                if (BuildConfig.DEBUG) Log.d(TAG, "Market sync completed, $failedCount failed")
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // User stopped the sync — progress is saved by OraclePriceStore
                 _uiState.value = _uiState.value.copy(
@@ -2661,6 +3142,48 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     fun stopMarketSync() {
         marketSyncJob?.cancel()
         marketSyncJob = null
+    }
+
+    /** Retry only the tokens that timed out in the previous sync run */
+    fun retryFailedSync() {
+        val failedTokens = oraclePriceStore.lastSyncFailedTokens
+        if (failedTokens.isEmpty() || marketSyncJob?.isActive == true) return
+
+        _uiState.value = _uiState.value.copy(
+            marketSyncState = "syncing",
+            marketSyncProgress = 0f,
+            marketSyncLabel = "",
+            marketSyncIndex = 0,
+            marketSyncTotal = failedTokens.size,
+            syncFailedCount = 0
+        )
+
+        marketSyncJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                oraclePriceStore.syncAllTokens(nodePool, failedTokens)
+
+                val now = System.currentTimeMillis()
+                val retryFailedCount = oraclePriceStore.lastSyncFailedTokens.size
+                _uiState.value = _uiState.value.copy(
+                    tokenMarketData = oraclePriceStore.allTokenMarketData,
+                    marketSyncState = "completed",
+                    marketSyncProgress = 1f,
+                    lastMarketSyncMs = now,
+                    syncFailedCount = retryFailedCount
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _uiState.value = _uiState.value.copy(
+                    tokenMarketData = oraclePriceStore.allTokenMarketData,
+                    marketSyncState = "idle",
+                    marketSyncIncomplete = true
+                )
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    tokenMarketData = oraclePriceStore.allTokenMarketData,
+                    marketSyncState = "idle"
+                )
+            }
+        }
     }
 
     fun setChartRange(range: String) {

@@ -33,7 +33,8 @@ fun MainScreen(
     onNavigateToWalletSelector: () -> Unit,
     onNavigateToAddWallet: () -> Unit,
     onNavigateToWalletInfo: (String) -> Unit,
-    onSubmit: () -> Unit
+    onSubmit: () -> Unit,
+    onNavigateToSend: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
@@ -166,7 +167,8 @@ fun MainScreen(
                                 viewModel = viewModel,
                                 onDeleteComplete = null,
                                 showTitle = true,
-                                onNavigateToAddWallet = onNavigateToAddWallet
+                                onNavigateToAddWallet = onNavigateToAddWallet,
+                                onNavigateToSend = onNavigateToSend
                             )
                         }
                     }

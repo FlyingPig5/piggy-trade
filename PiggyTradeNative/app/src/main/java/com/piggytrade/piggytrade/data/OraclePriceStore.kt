@@ -93,6 +93,9 @@ class OraclePriceStore(private val context: Context) {
         private set
     var isSyncingAllTokens by mutableStateOf(false)
         private set
+    /** Tokens that failed to sync in the last run (name, poolNft, decimals) */
+    var lastSyncFailedTokens by mutableStateOf<List<Triple<String, String, Int>>>(emptyList())
+        private set
     /** Timestamp when isSyncingAllTokens was last set to true — used to detect stale flags */
     private var syncingAllTokensStartMs = 0L
 
@@ -107,8 +110,8 @@ class OraclePriceStore(private val context: Context) {
     }
 
     /**
-     * Resilient API fetch — retries indefinitely with different nodes from the pool.
-     * Only CancellationException breaks the loop. Uses exponential backoff (2s, 4s, 8s, max 30s).
+     * Resilient API fetch — tries up to MAX_FETCH_ATTEMPTS nodes, each with a hard timeout.
+     * Throws after all attempts fail so failed tokens are skipped rather than blocking forever.
      */
     @Suppress("UNCHECKED_CAST")
     private suspend fun <T> resilientFetch(
@@ -116,20 +119,20 @@ class OraclePriceStore(private val context: Context) {
         label: String,
         block: suspend (NodeClient) -> T
     ): T {
-        var attempt = 0
-        while (true) {
+        val maxAttempts = 3
+        val timeoutMs = 10_000L // 10s per fetch attempt
+        repeat(maxAttempts) { attempt ->
             val client = nodePool.next()
             try {
-                return block(client)
+                return kotlinx.coroutines.withTimeout(timeoutMs) { block(client) }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                attempt++
-                val delay = minOf(2000L * (1L shl minOf(attempt - 1, 4)), 30_000L)
-                if (BuildConfig.DEBUG) Log.d(TAG, "$label: attempt $attempt failed (${e.message}), retrying in ${delay}ms")
-                kotlinx.coroutines.delay(delay)
+                if (BuildConfig.DEBUG) Log.d(TAG, "$label: attempt ${attempt + 1}/$maxAttempts failed (${e.message})")
+                if (attempt < maxAttempts - 1) kotlinx.coroutines.delay(1_000L)
             }
         }
+        throw Exception("$label: all $maxAttempts fetch attempts failed")
     }
 
     /** Sync all sources from the node. Call on startup. */
@@ -710,6 +713,8 @@ class OraclePriceStore(private val context: Context) {
 
             if (BuildConfig.DEBUG) Log.d(TAG, "Syncing ${remaining.size} tokens across $parallelism nodes")
 
+            val failedTokens = java.util.concurrent.CopyOnWriteArrayList<Triple<String, String, Int>>()
+
             coroutineScope {
                 chunks.map { chunk ->
                     async(Dispatchers.IO) {
@@ -720,6 +725,7 @@ class OraclePriceStore(private val context: Context) {
                                 throw e
                             } catch (e: Exception) {
                                 if (BuildConfig.DEBUG) Log.d(TAG, "syncAllTokens: $name failed: ${e.message}")
+                                failedTokens.add(Triple(name, poolNft, decimals))
                             }
 
                             val done = completedCount.incrementAndGet()
@@ -746,6 +752,9 @@ class OraclePriceStore(private val context: Context) {
             // Final rebuild
             allTokenMarketData = tokenDexData.keys.mapNotNull { computeMarketData(it) }
                 .sortedByDescending { it.volume7dErg }
+
+            // Store failed tokens so UI can offer to retry
+            lastSyncFailedTokens = failedTokens.toList()
 
             // All tokens done — reset resume index for next full cycle
             prefs.edit().putInt("allTokenResumeIndex", 0).apply()

@@ -244,13 +244,60 @@ fun MarketSyncDialog(
                             }
                         }
                         "completed" -> {
-                            Button(
-                                onClick = onDismiss,
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(containerColor = ColorAccent),
-                                shape = RoundedCornerShape(12.dp)
-                            ) {
-                                Text("Done", color = ColorBg, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            val failedCount = uiState.syncFailedCount
+                            if (failedCount > 0) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    // Warning banner
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(ColorOrange.copy(alpha = 0.12f), RoundedCornerShape(8.dp))
+                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text("⚠", color = ColorOrange, fontSize = 16.sp)
+                                        Text(
+                                            "$failedCount token${if (failedCount > 1) "s" else ""} could not be synced due to timeouts. Retry to try again.",
+                                            color = ColorOrange,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Button(
+                                            onClick = { viewModel.retryFailedSync() },
+                                            modifier = Modifier.weight(1f),
+                                            colors = ButtonDefaults.buttonColors(containerColor = ColorOrange),
+                                            shape = RoundedCornerShape(12.dp)
+                                        ) {
+                                            Text("Retry Failed ($failedCount)", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                        Button(
+                                            onClick = onDismiss,
+                                            modifier = Modifier.weight(1f),
+                                            colors = ButtonDefaults.buttonColors(containerColor = ColorAccent),
+                                            shape = RoundedCornerShape(12.dp)
+                                        ) {
+                                            Text("Done", color = ColorBg, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            } else {
+                                Button(
+                                    onClick = onDismiss,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = ColorAccent),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text("Done", color = ColorBg, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                         else -> {

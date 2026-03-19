@@ -40,7 +40,8 @@ fun WalletInfoScreen(
     walletName: String,
     viewModel: SwapViewModel,
     onBack: () -> Unit,
-    onNavigateToAddWallet: () -> Unit
+    onNavigateToAddWallet: () -> Unit,
+    onNavigateToSend: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
     Column(
@@ -80,12 +81,42 @@ fun WalletInfoScreen(
             }
         }
 
+        // Send button
+        if (uiState.selectedWallet.isNotEmpty()) {
+            androidx.compose.material3.Button(
+                onClick = onNavigateToSend,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp)
+                    .height(48.dp),
+                shape = androidx.compose.foundation.shape.RoundedCornerShape(14.dp),
+                colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                    containerColor = ColorAccent
+                )
+            ) {
+                Text(
+                    text = "↑",
+                    color = ColorBg,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Send",
+                    color = ColorBg,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
         WalletInfoContent(
             walletName = walletName,
             viewModel = viewModel,
             onDeleteComplete = onBack,
             showTitle = false,
-            onNavigateToAddWallet = onNavigateToAddWallet
+            onNavigateToAddWallet = onNavigateToAddWallet,
+            onNavigateToSend = onNavigateToSend
         )
     }
 }
@@ -97,7 +128,8 @@ fun WalletInfoContent(
     viewModel: SwapViewModel,
     onDeleteComplete: (() -> Unit)? = null,
     showTitle: Boolean = true,
-    onNavigateToAddWallet: (() -> Unit)? = null
+    onNavigateToAddWallet: (() -> Unit)? = null,
+    onNavigateToSend: (() -> Unit)? = null
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var showDeleteConfirm1 by remember { mutableStateOf(false) }
@@ -300,6 +332,23 @@ fun WalletInfoContent(
                         color = ColorAccent,
                         trackColor = ColorInputBg
                     )
+                }
+
+                // Send button inside balance card
+                if (onNavigateToSend != null && walletName.isNotEmpty() && walletName != "Select Wallet") {
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = onNavigateToSend,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = ColorAccent)
+                    ) {
+                        Text("↑", color = ColorBg, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Send", color = ColorBg, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
             }
         }
