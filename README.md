@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="branding/branding_landscape.jpg" width="700">
+  <img src="branding/branding_landscape.jpeg" width="700">
 </p>
 
 Open-source crypto trading app for the **Ergo blockchain** on Android — swap tokens, mint stablecoins, track your portfolio, and follow live on-chain activity, all from your pocket.
