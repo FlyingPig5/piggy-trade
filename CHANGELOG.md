@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.1 — 2026-03-20
+### Major Features
+- **Rebrand to Truffle**: Application renamed from PiggyTrade to Truffle — new branding across the entire app including launcher, top bar wordmark image, settings screen, share watermarks, and all documentation.
+- **Send ERG & Tokens**: New dedicated Send screen accessible from the Wallet tab. Supports sending ERG and tokens to multiple recipients in a single transaction. Features include QR code scanning for addresses, a token multiselect dialog showing your held tokens, a miner fee slider, and a full review screen before signing.
+- **ErgoPay Deep Linking**: The app now handles `ergopay:` URIs directly. Scan a QR code from any dApp or click an ErgoPay link and Truffle opens the transaction for review — showing a full per-address breakdown of inputs, outputs, and net changes before you sign.
+- **QR Code Scanner**: Built-in camera-based QR scanner for addresses and ErgoPay requests, accessible from the Send screen and wallet setup.
+- **Standardized Transaction Review**: All transaction types (DEX swaps, stablecoin mints/redeems, sends, and ErgoPay) now share a consistent review screen with detailed per-address net-change breakdowns. Each address is labeled as YOUR WALLET, CONTRACT, APP FEE, MINER FEE, or EXTERNAL.
+
+### Enhancements
+- **Market Sync User-Controlled**: Market data sync (per-token price/volume) no longer auto-starts on first launch. It only runs when you explicitly tap the Sync button in the dialog. Oracle sync (USE/SigUSD prices) still runs automatically.
+- **Sync Dialog Improvements**: The Market Sync dialog now correctly reflects stale data status and provides clear options to sync, run in background, or stop. Sync timeouts reduced to 8 seconds per token for snappier responses. Watchdog retries immediately on failure with a cooldown after success.
+- **Dynamic Key Derivation**: Transaction signing now dynamically derives keys based on the actual number of addresses in your wallet, rather than a hardcoded limit. Ensures all addresses in a multi-address wallet can sign.
+- **Wallet TX Loading Performance**: ErgoTree lookups are cached in-memory — subsequent transaction history loads skip redundant API calls entirely. Market sync is automatically paused during TX loading to give wallet data full node bandwidth.
+- **Directional Tab Animations**: Bottom navigation tabs now slide in from the correct direction based on tab position — right tabs slide in from the right, left tabs from the left.
+- **Top Bar Wordmark**: The plain text "Truffle" wordmark in the top bar is now replaced with the branded `truffle.png` image.
+- **Settings Logo**: Settings screen logo now displays without circular clipping or edge feathering — the full image is shown.
+
+### Bug Fixes
+- **Debug Log Security**: All `Log.d()` calls throughout the app are now wrapped with `BuildConfig.DEBUG` checks, preventing sensitive information from being logged in release builds.
+- **Chart Data Accuracy**: Increased data points fetched for token charts and added a smart break condition to ensure up to 1 year of history is included for highly active tokens.
+
+
 ## 0.8.0 — 2026-03-17
 ### Major Features
 - **Ecosystem Activity Tab**: Entirely new "Ecosystem" tab added to the bottom navigation bar. Displays a live, paginated feed of all on-chain protocol activity: DEX swaps (Spectrum), LP swaps (USE LP, DexyGold LP), stablecoin mints/redeems (SigUSD, SigRSV, USE, DexyGold, FreeMint, ArbMint), and ERG stake / oracle actions. Transactions are sorted by recency with pull-to-refresh and infinite-scroll pagination.
@@ -36,7 +58,7 @@
 - **Wallet Token Display**: Removed the expand/collapse toggle for token lists in the wallet screen — all tokens now display directly without truncation.
 - **Transaction Detail Collapse**: Individual transaction inputs and outputs with ≥5 tokens now have a collapsible toggle showing the first 4 tokens with a "+N more tokens" link.
 - **Favorites Toggle**: Added a "Show Favorites" setting to hide/show the favorites bar on the DEX screen. Disabled by default, persisted across sessions. The swap arrow offset adjusts dynamically when hidden.
-- **Compact Top Bar**: Redesigned the top bar to a slimmer layout with just the Piggy icon on the left and loading/settings on the right, freeing vertical screen space.
+- **Compact Top Bar**: Redesigned the top bar to a slimmer layout with just the Truffle icon on the left and loading/settings on the right, freeing vertical screen space.
 - **Compact Bottom Nav**: Reduced the vertical height of the bottom navigation bar while preserving icon sizes for more screen real estate.
 - **Removed Experimental Banner**: Removed the red "Experimental" warning banner from the Bank screen.
 - **Debug Mode Toggle Removed from DEX**: The "Check TX" / "LIVE" toggle buttons have been removed from the main DEX tab — simulation mode is now exclusively controlled via Settings → Advanced.
@@ -111,5 +133,5 @@
 - **Performance**: Removed redundant network requests for special tokens already defined in system configuration.
 
 ## 0.5.0
-* Initial release of PiggyTrade.
+* Initial release of Truffle.
 

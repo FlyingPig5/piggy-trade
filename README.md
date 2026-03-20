@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="branding.jpg" width="700">
+  <img src="branding/branding_landscape.jpg" width="700">
 </p>
 
 Open-source crypto trading app for the **Ergo blockchain** on Android — swap tokens, mint stablecoins, track your portfolio, and follow live on-chain activity, all from your pocket.
 
 > [!WARNING]
-> **BETA SOFTWARE**: PiggyTrade is currently in beta. Always verify all transaction details and output amounts before confirming. Use at your own risk!
+> **BETA SOFTWARE**: Truffle is currently in beta. Always verify all transaction details and output amounts before confirming. Use at your own risk!
 >
 > As an **Open Source** project, the community is invited to audit the code for vulnerabilities. Transparency is key to building a secure tool for everyone.
 >
@@ -20,9 +20,9 @@ Download the latest compiled APK from [GitHub Releases](https://github.com/Flyin
 
 ---
 
-## What is PiggyTrade?
+## What is Truffle?
 
-PiggyTrade is a fast, self-custodial mobile trading client for the Ergo blockchain. It's built for traders who want to **act quickly without giving up control** — you stay on-chain, you hold your keys, and every swap lands directly in a DEX pool with no middlemen.
+Truffle is a fast, self-custodial mobile trading client for the Ergo blockchain. It's built for traders who want to **act quickly without giving up control** — you stay on-chain, you hold your keys, and every swap lands directly in a DEX pool with no middlemen.
 
 It supports **Spectrum/ErgoDEX** liquidity pools for token swaps, and the **USE**, **SigUSD/SigRSV** and **DexyGold** stablecoin protocols for minting and redeeming. Transactions can be signed securely via **ErgoPay** (recommended), or you can import a mnemonic and sign directly in the app.
 
@@ -47,6 +47,12 @@ A live feed of **everything happening on-chain** across the Ergo DeFi ecosystem 
 
 ### 🏦 Stablecoins (Bank Tab)
 Mint and redeem **SigUSD**, **SigRSV**, **USE**, and **DexyGold** directly from the app. The Bank tab shows live protocol status, reserve ratios, available capacity, and fee breakdowns. Blocked operations show an expandable explanation so you always know why something isn't available right now.
+
+### 📤 Send ERG & Tokens
+Send ERG and tokens to one or multiple recipients in a single transaction. The Send screen supports **QR code scanning** for addresses, a **token multiselect** showing all tokens in your wallet, and a **miner fee slider**. A full review screen shows you exactly what's going out before you sign.
+
+### 📱 ErgoPay Deep Linking
+Truffle handles `ergopay:` URIs natively — scan a QR code from any dApp or click an ErgoPay link and the app opens the transaction for review. A detailed **per-address breakdown** shows net changes for your wallet, contracts, fees, and external addresses before you confirm.
 
 ### 👛 Multi-Address Wallet Support
 Import a mnemonic and the app automatically scans your derivation path to find **all your active addresses**. You can pick which addresses to trade from, set a change address, and see balances aggregated across all of them. Transaction history covers every address in your wallet.
@@ -85,8 +91,11 @@ Go to the **Wallet tab** and tap the `+` button. Choose ErgoPay (address-only, s
 ### Favorites Grid
 The DEX screen has a quick-pick **Favorites grid** — tap any asset to instantly set it as your swap target. Tap the Edit toggle to customise which tokens appear. You can configure how many favorites are shown in Settings.
 
+### Sending ERG & Tokens
+Tap **Send** from the Wallet tab. Enter a recipient address (or scan a QR code), set the ERG amount, and optionally add tokens from your balance. Add multiple recipients if needed. Review the transaction summary, then sign with your password or biometrics.
+
 ### Node Configuration
-PiggyTrade ships with a set of public Ergo nodes and automatically distributes requests across them for speed and resilience. You can add your own node URL in **Settings → Network** for maximum reliability.
+Truffle ships with a set of public Ergo nodes and automatically distributes requests across them for speed and resilience. You can add your own node URL in **Settings → Network** for maximum reliability.
 
 ### Check TX Mode
 In **Settings → Advanced**, you can enable **Check TX mode** — transactions are validated by the node but never broadcast. Useful for verifying amounts before going live.
@@ -95,7 +104,7 @@ In **Settings → Advanced**, you can enable **Check TX mode** — transactions 
 
 ## Philosophy: Speed First
 
-PiggyTrade is built to be **fast and direct**:
+Truffle is built to be **fast and direct**:
 - Pool data and token metadata are cached locally so the app is ready instantly on launch.
 - The node pool distributes read requests across multiple nodes in parallel for snappy quotes and balance fetches.
 - The UI updates progressively as data arrives — you see prices and balances as soon as they're ready, not after a full sync completes.

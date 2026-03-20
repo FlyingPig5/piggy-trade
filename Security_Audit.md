@@ -1,8 +1,8 @@
-# PiggyTrade Security Audit Report
+# Truffle Security Audit Report
 
 | | |
 |---|---|
-| **Application** | PiggyTrade — Native Android Ergo Wallet & DEX Client |
+| **Application** | Truffle — Native Android Ergo Wallet & DEX Client |
 | **Blockchain** | Ergo (eUTXO Model) |
 | **AI Agent** | Opus 4.6|
 | **Date** | 2026-03-18 |
@@ -38,7 +38,7 @@
 ### 1.1 Access Control ✅
 
 - **Mnemonic-based signing** is gated by password decryption (SCrypt+Fernet) or biometric authentication through Android Keystore. The mnemonic is never persisted in plaintext.
-- **ErgoPay mode** delegates signing entirely to the official Ergo Mobile Wallet via EIP-20, keeping key material completely out of PiggyTrade.
+- **ErgoPay mode** delegates signing entirely to the official Ergo Mobile Wallet via EIP-20, keeping key material completely out of Truffle.
 - The `signTransaction()` call in `ErgoSigner` requires a valid decrypted mnemonic — there is no code path that bypasses this.
 
 ### 1.2 Arithmetic ✅
@@ -139,7 +139,7 @@ Several log statements execute without `BuildConfig.DEBUG` guards:
 
 | Aspect | Detail |
 |--------|--------|
-| **Prerequisite** | Attacker compromises one of the public Ergo nodes used by PiggyTrade |
+| **Prerequisite** | Attacker compromises one of the public Ergo nodes used by Truffle |
 | **Steps** | 1. Serve a fake pool box with manipulated token reserves. 2. The app quotes a trade based on spoofed reserves. 3. User approves unfavorable trade. 4. The actual on-chain pool box has different reserves → transaction either fails validation or executes at the real rate. |
 | **Mitigating controls** | On Ergo, the transaction references the pool box **by box ID**. If the node returns a fake box, the box ID won't match the real on-chain box, and the transaction will be rejected by miners. The sigma-rust native library validates box IDs cryptographically. |
 | **Result** | **Attack fails at the blockchain level.** The transaction would reference a non-existent box and be rejected. The only impact is a misleading quote (UX annoyance), not fund loss. |
@@ -150,10 +150,10 @@ Several log statements execute without `BuildConfig.DEBUG` guards:
 | Aspect | Detail |
 |--------|--------|
 | **Prerequisite** | Malware with screen overlay / accessibility service permission on the user's device |
-| **Steps** | 1. User opens PiggyTrade and navigates to "Add Wallet". 2. User types or pastes their mnemonic. 3. Malware with accessibility permissions reads the text field content. 4. Alternatively, malware reads the clipboard if user pastes. |
+| **Steps** | 1. User opens Truffle and navigates to "Add Wallet". 2. User types or pastes their mnemonic. 3. Malware with accessibility permissions reads the text field content. 4. Alternatively, malware reads the clipboard if user pastes. |
 | **Mitigating controls** | The mnemonic text field is a standard Compose `OutlinedTextField` — Android does not allow other apps to read its content without accessibility permission or a screen-overlay exploit. Clipboard reading requires foreground status (Android 10+) or accessibility permission. The mnemonic is encrypted immediately upon save. |
 | **Result** | **Attack succeeds only with elevated permissions.** If the user's device has malware with accessibility-service access, the mnemonic can be captured during input. This is a platform-level threat that affects all wallet apps equally. |
-| **What attacker gains** | Full control of the wallet if mnemonic is captured. Mitigation: use ErgoPay mode (mnemonic never enters PiggyTrade). |
+| **What attacker gains** | Full control of the wallet if mnemonic is captured. Mitigation: use ErgoPay mode (mnemonic never enters Truffle). |
 
 ---
 
@@ -251,10 +251,10 @@ A developer fee exists in the application. It is:
 
 ## 8. Overall Assessment
 
-**PiggyTrade demonstrates a well-engineered security posture for an open-source mobile wallet.** The cryptographic layer is properly implemented with SCrypt KDF, Fernet (AES-CBC+HMAC) for password-protected wallets, and Android Keystore AES-GCM for biometric wallets. All sensitive logging is gated behind `BuildConfig.DEBUG` with only minor exceptions. The signing engine (`sigma-rust`) is integrated as local source rather than a remote artifact, which is a supply-chain security advantage.
+**Truffle demonstrates a well-engineered security posture for an open-source mobile wallet.** The cryptographic layer is properly implemented with SCrypt KDF, Fernet (AES-CBC+HMAC) for password-protected wallets, and Android Keystore AES-GCM for biometric wallets. All sensitive logging is gated behind `BuildConfig.DEBUG` with only minor exceptions. The signing engine (`sigma-rust`) is integrated as local source rather than a remote artifact, which is a supply-chain security advantage.
 
 The eUTXO model of Ergo provides inherent structural protections against reentrancy and most MEV-style attacks. The AMM math uses `BigDecimal`/`BigInteger` throughout, preventing overflow/underflow in financial calculations.
 
 No critical or high severity vulnerabilities were identified. The findings are limited to configuration hardening opportunities (network security config, backup rules) and UX-level improvements (slippage guards, clipboard clearing). The developer fee is transparently disclosed to users on the review screen.
 
-**This application is suitable for managing real funds**, with the caveat that mnemonic-mode users should use strong passwords (≥12 characters) and that the ErgoPay mode provides the highest security by keeping key material entirely outside PiggyTrade.
+**This application is suitable for managing real funds**, with the caveat that mnemonic-mode users should use strong passwords (≥12 characters) and that the ErgoPay mode provides the highest security by keeping key material entirely outside Truffle.
