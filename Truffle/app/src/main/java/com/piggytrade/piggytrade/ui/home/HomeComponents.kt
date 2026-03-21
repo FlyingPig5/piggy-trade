@@ -125,30 +125,6 @@ fun BottomMenuBar(
             )
         }
 
-        // Portfolio Tab
-        Column(
-            modifier = Modifier
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = { onTabClick("portfolio") }
-                ),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = "\uE6B1", // pie_chart icon
-                fontFamily = MaterialDesignIcons,
-                fontSize = 28.sp,
-                color = if (activeTab == "portfolio") Color.White else ColorTextDim
-            )
-            Text(
-                text = "Portfolio",
-                fontSize = 8.sp,
-                fontWeight = FontWeight.Bold,
-                color = if (activeTab == "portfolio") Color.White else ColorTextDim
-            )
-        }
-
         // Ecosystem Tab
         Column(
             modifier = Modifier
@@ -170,6 +146,30 @@ fun BottomMenuBar(
                 fontSize = 7.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (activeTab == "ecosystem") Color.White else ColorTextDim
+            )
+        }
+
+        // Explorer Tab
+        Column(
+            modifier = Modifier
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = { onTabClick("explorer") }
+                ),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = "\uE8B6", // search icon
+                fontFamily = MaterialDesignIcons,
+                fontSize = 28.sp,
+                color = if (activeTab == "explorer") Color.White else ColorTextDim
+            )
+            Text(
+                text = "Explorer",
+                fontSize = 8.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (activeTab == "explorer") Color.White else ColorTextDim
             )
         }
 

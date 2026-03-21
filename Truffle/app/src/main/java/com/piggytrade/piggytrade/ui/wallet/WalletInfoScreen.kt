@@ -5,6 +5,20 @@ import com.piggytrade.piggytrade.ui.home.*
 import com.piggytrade.piggytrade.ui.swap.*
 import com.piggytrade.piggytrade.ui.settings.*
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AccountBalance
+import androidx.compose.material.icons.rounded.CurrencyExchange
+import androidx.compose.material.icons.rounded.Receipt
+import androidx.compose.material.icons.rounded.SwapHoriz
+import androidx.compose.material.icons.rounded.Waves
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextOverflow
+import java.text.SimpleDateFormat
+import java.util.*
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -129,7 +143,8 @@ fun WalletInfoContent(
     onDeleteComplete: (() -> Unit)? = null,
     showTitle: Boolean = true,
     onNavigateToAddWallet: (() -> Unit)? = null,
-    onNavigateToSend: (() -> Unit)? = null
+    onNavigateToSend: (() -> Unit)? = null,
+    onAddressClick: ((String) -> Unit)? = null
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var showDeleteConfirm1 by remember { mutableStateOf(false) }
@@ -325,6 +340,20 @@ fun WalletInfoContent(
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold
                 )
+
+                // Total portfolio USD value
+                val ergPriceUsd = uiState.ergPriceUsd
+                val ergUsdValue = if (ergPriceUsd != null) uiState.walletErgBalance * ergPriceUsd else null
+                val tokenUsdTotal = uiState.tokenUsdValues.values.sum()
+                val totalPortfolio = (ergUsdValue ?: 0.0) + tokenUsdTotal
+                if (ergPriceUsd != null) {
+                    Text(
+                        text = "Portfolio: \$${String.format("%.2f", totalPortfolio)}",
+                        color = ColorTextDim,
+                        fontSize = 13.sp,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
                 
                 if (uiState.isLoadingWallet) {
                     LinearProgressIndicator(
@@ -401,28 +430,77 @@ fun WalletInfoContent(
             }
         } else if (selectedTab == 1) {
             val networkTrades = uiState.networkTrades
-            
-            if (networkTrades.isEmpty() && !uiState.isLoadingHistory) {
-                Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
-                    Text("No transaction history", color = ColorTextDim)
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth().weight(1f)
+
+            // DeFi filter mode
+            var txFilter by remember { mutableStateOf("all") } // "all", "defi"
+            val displayTrades = remember(networkTrades, txFilter) {
+                if (txFilter == "defi") networkTrades.filter { it.label != null }
+                else networkTrades
+            }
+
+            Column(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                // Filter chips row
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally)
                 ) {
-                    items(networkTrades) { trade ->
-                        NetworkTradeHistoryItemView(trade, viewModel)
+                    listOf("all" to "All", "defi" to "DeFi").forEach { (key, label) ->
+                        val isActive = txFilter == key
+                        val bgColor by animateColorAsState(
+                            targetValue = if (isActive) ColorAccent else ColorInputBg,
+                            animationSpec = tween(200)
+                        )
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = bgColor,
+                            modifier = Modifier.clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = { txFilter = key }
+                            )
+                        ) {
+                            Text(
+                                text = label,
+                                color = if (isActive) ColorBg else Color.White,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 5.dp)
+                            )
+                        }
                     }
-                    if (uiState.isLoadingHistory) {
-                        item {
-                            Box(modifier = Modifier.fillMaxWidth().padding(10.dp), contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator(color = ColorAccent, modifier = Modifier.size(24.dp))
+                }
+
+                if (displayTrades.isEmpty() && !uiState.isLoadingHistory) {
+                    Box(modifier = Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                        Text(
+                            if (txFilter == "defi") "No DeFi activity yet" else "No transaction history",
+                            color = ColorTextDim
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().weight(1f)
+                    ) {
+                        if (txFilter == "defi") {
+                            items(displayTrades.take(50)) { trade ->
+                                DeFiActivityRow(tx = trade, viewModel = viewModel, onAddressClick = onAddressClick)
+                            }
+                        } else {
+                            items(displayTrades) { trade ->
+                                NetworkTradeHistoryItemView(trade, viewModel, onAddressClick = onAddressClick)
                             }
                         }
-                    } else if (networkTrades.isNotEmpty()) {
-                        item {
-                            LaunchedEffect(Unit) {
-                                viewModel.fetchTransactionHistory(loadMore = true)
+                        if (uiState.isLoadingHistory) {
+                            item {
+                                Box(modifier = Modifier.fillMaxWidth().padding(10.dp), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(color = ColorAccent, modifier = Modifier.size(24.dp))
+                                }
+                            }
+                        } else if (txFilter == "all" && networkTrades.isNotEmpty()) {
+                            item {
+                                LaunchedEffect(Unit) {
+                                    viewModel.fetchTransactionHistory(loadMore = true)
+                                }
                             }
                         }
                     }
@@ -440,7 +518,7 @@ fun WalletInfoContent(
 }
 
 @Composable
-fun NetworkTradeHistoryItemView(trade: NetworkTransaction, viewModel: SwapViewModel) {
+fun NetworkTradeHistoryItemView(trade: NetworkTransaction, viewModel: SwapViewModel, onAddressClick: ((String) -> Unit)? = null) {
     var showDetails by remember { mutableStateOf(false) }
     
     Card(
@@ -604,7 +682,7 @@ fun NetworkTradeHistoryItemView(trade: NetworkTransaction, viewModel: SwapViewMo
                     }
                     val myWalletAddrs = viewModel.uiState.value.walletAddresses.toSet()
                     items(trade.inputs) { inp ->
-                        CollapsibleBoxRow(inp, viewModel, myWalletAddrs)
+                        CollapsibleBoxRow(inp, viewModel, myWalletAddrs, onAddressClick = onAddressClick)
                     }
                     
                     item {
@@ -612,7 +690,7 @@ fun NetworkTradeHistoryItemView(trade: NetworkTransaction, viewModel: SwapViewMo
                         Text("To:", color = ColorAccent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                     }
                     items(trade.outputs) { out ->
-                        CollapsibleBoxRow(out, viewModel, myWalletAddrs)
+                        CollapsibleBoxRow(out, viewModel, myWalletAddrs, onAddressClick = onAddressClick)
                     }
                 }
             },
@@ -669,10 +747,13 @@ fun TokenBalanceItem(tokenId: String, amount: Long, viewModel: SwapViewModel) {
 }
 
 @Composable
-fun CollapsibleBoxRow(box: TxBox, viewModel: SwapViewModel, myAddresses: Set<String> = emptySet()) {
+fun CollapsibleBoxRow(box: TxBox, viewModel: SwapViewModel, myAddresses: Set<String> = emptySet(), onAddressClick: ((String) -> Unit)? = null) {
     var isExpanded by remember { mutableStateOf(false) }
     val threshold = 5
     val isMine = box.address in myAddresses
+
+    // Explore popup state
+    var showExplorePopup by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -686,7 +767,12 @@ fun CollapsibleBoxRow(box: TxBox, viewModel: SwapViewModel, myAddresses: Set<Str
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             val addr = if (box.address.length > 20) box.address.take(10) + "..." + box.address.takeLast(10) else box.address
-            Text(addr, color = if (isMine) Color.Green.copy(alpha = 0.7f) else ColorTextDim, fontSize = 10.sp)
+            Text(
+                addr,
+                color = if (onAddressClick != null && !isMine) ColorAccent else if (isMine) Color.Green.copy(alpha = 0.7f) else ColorTextDim,
+                fontSize = 10.sp,
+                modifier = if (onAddressClick != null) Modifier.clickable { showExplorePopup = true } else Modifier
+            )
             if (isMine) {
                 Spacer(Modifier.width(6.dp))
                 Text(
@@ -719,6 +805,42 @@ fun CollapsibleBoxRow(box: TxBox, viewModel: SwapViewModel, myAddresses: Set<Str
                 modifier = Modifier
                     .clickable { isExpanded = !isExpanded }
                     .padding(top = 2.dp)
+            )
+        }
+
+        // Explore this address popup
+        if (showExplorePopup && onAddressClick != null) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { showExplorePopup = false },
+                containerColor = ColorCard,
+                title = { Text("Explore Wallet", color = Color.White, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column {
+                        Text("View balance & transactions for:", color = ColorTextDim, fontSize = 13.sp)
+                        Spacer(Modifier.height(6.dp))
+                        val truncAddr = if (box.address.length > 20) "${box.address.take(10)}...${box.address.takeLast(8)}" else box.address
+                        Text(
+                            truncAddr,
+                            color = ColorAccent,
+                            fontSize = 13.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showExplorePopup = false
+                        onAddressClick(box.address)
+                    }) {
+                        Text("Explore", color = ColorAccent, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showExplorePopup = false }) {
+                        Text("Cancel", color = ColorTextDim)
+                    }
+                }
             )
         }
     }
@@ -985,6 +1107,265 @@ fun AddressManagementTab(
             dismissButton = {
                 TextButton(onClick = { addressToDelete = null }) {
                     Text("Cancel", color = ColorTextDim)
+                }
+            }
+        )
+    }
+}
+
+// ─── DeFi Activity Helpers ─────────────────────────────────────────────
+
+/** Material icon for a protocol transaction label */
+private fun getTxIcon(label: String): ImageVector {
+    val l = label.lowercase()
+    return when {
+        l.contains("freemint") -> Icons.Rounded.AccountBalance
+        l.contains("arbmint") -> Icons.Rounded.AccountBalance
+        l.contains("dex") || l.contains("lp swap") -> Icons.Rounded.SwapHoriz
+        l.contains("duckpools") -> Icons.Rounded.Waves
+        l.contains("buyback") -> Icons.Rounded.CurrencyExchange
+        l.contains("bank") -> Icons.Rounded.AccountBalance
+        else -> Icons.Rounded.Receipt
+    }
+}
+
+/** Tag color for a protocol transaction */
+@Composable
+private fun getTxTagColor(label: String): Color {
+    val l = label.lowercase()
+    return when {
+        l.contains("freemint") -> ColorAccent
+        l.contains("arbmint") -> Color(0xFFFF9800)
+        l.contains("bank") -> ColorBlue
+        l.contains("buyback") -> Color(0xFFFF9800)
+        l.contains("use lp") -> Color(0xFF29B6F6)
+        l.contains("dexygold lp") -> Color(0xFFFFB300)
+        l.contains("lp") -> Color(0xFF29B6F6)
+        l.contains("dex swap") || l.contains("dex t2t") -> Color(0xFF26C6DA)
+        l.contains("dex") -> Color(0xFF26C6DA)
+        else -> ColorTextDim
+    }
+}
+
+/** Describe what was sent and received in a transaction */
+private fun describeSwap(
+    netErgChange: Long,
+    netTokenChanges: Map<String, Long>,
+    viewModel: SwapViewModel
+): Pair<String, String>? {
+    val spent = mutableListOf<String>()
+    val gained = mutableListOf<String>()
+    if (netErgChange < 0) spent.add("${SwapViewModel.formatErg(Math.abs(netErgChange).toDouble() / 1e9)} ERG")
+    else if (netErgChange > 0) gained.add("${SwapViewModel.formatErg(netErgChange.toDouble() / 1e9)} ERG")
+    for ((tid, amt) in netTokenChanges) {
+        val name = viewModel.getTokenName(tid)
+        val formatted = viewModel.formatBalance(tid, Math.abs(amt))
+        if (amt < 0) spent.add("$formatted $name")
+        else gained.add("$formatted $name")
+    }
+    if (spent.isEmpty() && gained.isEmpty()) return null
+    return (spent.joinToString(" + ").ifEmpty { "—" }) to (gained.joinToString(" + ").ifEmpty { "—" })
+}
+
+private fun defiTimeAgo(timestamp: Long): String {
+    val now = System.currentTimeMillis()
+    val diffMs = now - timestamp
+    val mins = diffMs / 60000
+    if (mins < 1) return "Just now"
+    if (mins < 60) return "${mins}m ago"
+    val hours = mins / 60
+    if (hours < 24) return "${hours}h ago"
+    val days = hours / 24
+    if (days < 7) return "${days}d ago"
+    val sdf = SimpleDateFormat("MMM d", Locale.US)
+    return sdf.format(Date(timestamp))
+}
+
+private fun defiDate(timestamp: Long): String {
+    val sdf = SimpleDateFormat("d MMM yyyy", Locale.US)
+    return sdf.format(Date(timestamp))
+}
+
+@Composable
+fun DeFiActivityRow(tx: NetworkTransaction, viewModel: SwapViewModel, onAddressClick: ((String) -> Unit)? = null) {
+    val label = tx.label ?: "Transaction"
+    val tagColor = getTxTagColor(label)
+    val icon = getTxIcon(label)
+    val swap = describeSwap(tx.netErgChange, tx.netTokenChanges, viewModel)
+    var showDetails by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)
+            .clickable { showDetails = true },
+        colors = CardDefaults.cardColors(containerColor = ColorInputBg),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Left column: icon + protocol label
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+                modifier = Modifier.width(58.dp).padding(horizontal = 4.dp)
+            ) {
+                Icon(imageVector = icon, contentDescription = null, tint = tagColor, modifier = Modifier.size(26.dp))
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = label,
+                    color = tagColor,
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    lineHeight = 10.sp,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+            }
+
+            // Right: details
+            Column(modifier = Modifier.weight(1f)) {
+                // Row 1: confirmed status (left) + time/date (right)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (tx.isConfirmed) "✓ Confirmed" else "⏳ Pending",
+                        color = if (tx.isConfirmed) Color.White.copy(alpha = 0.85f) else Color.Yellow,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        "${defiTimeAgo(tx.timestamp)} · ${defiDate(tx.timestamp)}",
+                        color = Color.White.copy(alpha = 0.45f),
+                        fontSize = 9.sp
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // Row 2: Sent ➜ Received
+                if (swap != null) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            swap.first, color = Color.White, fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        Text(
+                            " ➜ ", color = Color.White.copy(alpha = 0.5f), fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            swap.second, color = Color.White, fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                    }
+                } else {
+                    Text("Transaction", color = ColorTextDim, fontSize = 12.sp)
+                }
+
+                // TxID
+                Text(
+                    text = "TxID: ${tx.id.take(8)}...${tx.id.takeLast(8)}",
+                    color = ColorTextDim,
+                    fontSize = 9.sp,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.padding(top = 3.dp)
+                )
+            }
+        }
+    }
+
+    // Transaction details dialog (same as NetworkTradeHistoryItemView)
+    if (showDetails) {
+        val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+
+        AlertDialog(
+            onDismissRequest = { showDetails = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false),
+            containerColor = ColorCard,
+            modifier = Modifier.fillMaxWidth(0.98f),
+            title = {
+                Text("Transaction Details", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                LazyColumn(modifier = Modifier.fillMaxWidth()) {
+                    item {
+                        Text("TxID:", color = ColorTextDim, fontSize = 12.sp)
+                        Text(tx.id, color = Color.White, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                        Spacer(Modifier.height(15.dp))
+
+                        // External Links
+                        Text("View on Explorer:", color = ColorAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                "Ergo Explorer",
+                                color = ColorAccent,
+                                fontSize = 11.sp,
+                                modifier = Modifier.clickable {
+                                    uriHandler.openUri("https://explorer.ergoplatform.com/en/transactions/${tx.id}")
+                                }
+                            )
+                            Text(
+                                "ErgExplorer",
+                                color = ColorAccent,
+                                fontSize = 11.sp,
+                                modifier = Modifier.clickable {
+                                    uriHandler.openUri("https://ergexplorer.com/transactions#${tx.id}")
+                                }
+                            )
+                            Text(
+                                "Sigmaspace.io",
+                                color = ColorAccent,
+                                fontSize = 11.sp,
+                                modifier = Modifier.clickable {
+                                    uriHandler.openUri("https://sigmaspace.io/en/transaction/${tx.id}")
+                                }
+                            )
+                        }
+
+                        Spacer(Modifier.height(15.dp))
+                    }
+
+                    item {
+                        Text("Status: ${if (tx.isConfirmed) "Confirmed (${tx.numConfirmations} confs)" else "Unconfirmed" }", color = Color.White, fontSize = 12.sp)
+                        Spacer(Modifier.height(10.dp))
+                    }
+
+                    item {
+                        Text("From:", color = ColorAccent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                    val myWalletAddrs = viewModel.uiState.value.walletAddresses.toSet()
+                    items(tx.inputs) { inp ->
+                        CollapsibleBoxRow(inp, viewModel, myWalletAddrs, onAddressClick = onAddressClick)
+                    }
+
+                    item {
+                        Spacer(Modifier.height(10.dp))
+                        Text("To:", color = ColorAccent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                    items(tx.outputs) { out ->
+                        CollapsibleBoxRow(out, viewModel, myWalletAddrs, onAddressClick = onAddressClick)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDetails = false }) {
+                    Text("Close", color = ColorAccent)
                 }
             }
         )

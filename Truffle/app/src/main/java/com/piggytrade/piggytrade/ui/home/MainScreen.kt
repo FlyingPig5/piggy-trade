@@ -7,6 +7,7 @@ import com.piggytrade.piggytrade.ui.settings.*
 import com.piggytrade.piggytrade.ui.bank.*
 import com.piggytrade.piggytrade.ui.portfolio.*
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
@@ -34,7 +35,9 @@ fun MainScreen(
     onNavigateToAddWallet: () -> Unit,
     onNavigateToWalletInfo: (String) -> Unit,
     onSubmit: () -> Unit,
-    onNavigateToSend: () -> Unit = {}
+    onNavigateToSend: () -> Unit = {},
+    onNavigateToAddressExplorer: (String) -> Unit = {},
+    onNavigateToQrScannerExplorer: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
@@ -63,6 +66,24 @@ fun MainScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     var showBetaDisclaimer by remember { mutableStateOf(false) }
 
+    // Clear explorer state when navigating away from the explorer tab
+    LaunchedEffect(uiState.activeTab) {
+        if (uiState.activeTab != "explorer") {
+            viewModel.clearExplorerState()
+        }
+    }
+
+    // Handle physical back button on non-default tabs
+    BackHandler(enabled = uiState.activeTab != "swap") {
+        if (uiState.activeTab == "explorer" && uiState.explorerAddress.isNotEmpty()) {
+            // If exploring an address, go back to address book
+            viewModel.clearExplorerState()
+        } else {
+            // Return to the default tab
+            viewModel.setActiveTab("swap")
+        }
+    }
+
 
     Scaffold(
         bottomBar = {
@@ -86,7 +107,7 @@ fun MainScreen(
                     .blur(if (uiState.activeSelector != null) 10.dp else 0.dp)
             ) {
                 // Header with Wallet Selector, Logo, and Settings (hidden on ecosystem tab)
-                if (uiState.activeTab != "ecosystem") {
+                if (uiState.activeTab != "ecosystem" && uiState.activeTab != "explorer") {
                     WalletSelectorRow(uiState, viewModel, onNavigateToAddWallet, onNavigateToSettings)
                 }
 
@@ -96,7 +117,7 @@ fun MainScreen(
                 AnimatedContent(
                     targetState = uiState.activeTab,
                     transitionSpec = {
-                        val tabOrder = listOf("dex", "bank", "portfolio", "ecosystem", "wallet")
+                        val tabOrder = listOf("dex", "bank", "ecosystem", "explorer", "wallet")
                         val fromIdx = tabOrder.indexOf(initialState)
                         val toIdx = tabOrder.indexOf(targetState)
                         if (toIdx > fromIdx) {
@@ -158,11 +179,16 @@ fun MainScreen(
                                  onSubmit = { showBetaDisclaimer = true }
                              )
                         }
-                        "portfolio" -> Box(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp)) {
-                            PortfolioScreen(viewModel = viewModel)
-                        }
                         "ecosystem" -> Box(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp)) {
-                            EcosystemScreen(viewModel = viewModel)
+                            EcosystemScreen(viewModel = viewModel, onNavigateToAddressExplorer = onNavigateToAddressExplorer)
+                        }
+                        "explorer" -> Box(modifier = Modifier.fillMaxSize().padding(horizontal = 0.dp)) {
+                            AddressExplorerScreen(
+                                viewModel = viewModel,
+                                onBack = { viewModel.setActiveTab("wallet") },
+                                onNavigateToQrScanner = onNavigateToQrScannerExplorer,
+                                onNavigateToAddressExplorer = onNavigateToAddressExplorer
+                            )
                         }
                         else -> Box(modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp)) {
                             WalletInfoContent(
@@ -171,7 +197,8 @@ fun MainScreen(
                                 onDeleteComplete = null,
                                 showTitle = true,
                                 onNavigateToAddWallet = onNavigateToAddWallet,
-                                onNavigateToSend = onNavigateToSend
+                                onNavigateToSend = onNavigateToSend,
+                                onAddressClick = onNavigateToAddressExplorer
                             )
                         }
                     }
