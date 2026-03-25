@@ -3,16 +3,16 @@
 </p>
 
 
-## What is Truffle?
+## What is TrufflΣ?
 
-Truffle is a fast, self-custodial mobile trading app and wallet for the Ergo blockchain. It's built for traders who want to **act quickly without giving up control** — you stay on-chain, you hold your keys, and every swap lands directly in a DEX pool with no middlemen. It supports traditional wallet transctions and connecting to supported dapps via ErgoPay..
+TrufflΣ is a fast, self-custodial mobile trading app and wallet for the Ergo blockchain. It's built for traders who want to **act quickly without giving up control** — you stay on-chain, you hold your keys, and every swap lands directly in a DEX pool with no middlemen. It supports traditional wallet transctions and connecting to supported dapps via ErgoPay..
 
 It supports **Spectrum/ErgoDEX** liquidity pools for token swaps, and the **USE**, **SigUSD/SigRSV** and **DexyGold** stablecoin protocols for minting and redeeming. Transactions can be signed securely via **ErgoPay** (recommended), or you can import a mnemonic and sign directly in the app.
 
 ---
 
 > [!WARNING]
-> **BETA SOFTWARE**: Truffle is currently in beta. Always verify all transaction details and output amounts before confirming. Use at your own risk!
+> **BETA SOFTWARE**: TrufflΣ is currently in beta. Always verify all transaction details and output amounts before confirming. Use at your own risk!
 >
 > As an **Open Source** project, the community is invited to audit the code for vulnerabilities. Transparency is key to building a secure tool for everyone.
 >
@@ -52,7 +52,7 @@ Mint and redeem **SigUSD**, **SigRSV**, **USE**, and **DexyGold** directly from 
 Send ERG and tokens to one or multiple recipients in a single transaction. The Send screen supports **QR code scanning** for addresses, a **token multiselect** showing all tokens in your wallet, and a **miner fee slider**. A full review screen shows you exactly what's going out before you sign.
 
 ### 📱 ErgoPay Deep Linking
-Truffle handles `ergopay:` URIs natively — scan a QR code from any dApp or click an ErgoPay link and the app opens the transaction for review. A detailed **per-address breakdown** shows net changes for your wallet, contracts, fees, and external addresses before you confirm.
+TrufflΣ handles `ergopay:` URIs natively — scan a QR code from any dApp or click an ErgoPay link and the app opens the transaction for review. A detailed **per-address breakdown** shows net changes for your wallet, contracts, fees, and external addresses before you confirm.
 
 ### 👛 Multi-Address Wallet Support
 Import a mnemonic and the app automatically scans your derivation path to find **all your active addresses**. You can pick which addresses to trade from, set a change address, and see balances aggregated across all of them. Transaction history covers every address in your wallet.
@@ -95,7 +95,7 @@ The DEX screen has a quick-pick **Favorites grid** — tap any asset to instantl
 Tap **Send** from the Wallet tab. Enter a recipient address (or scan a QR code), set the ERG amount, and optionally add tokens from your balance. Add multiple recipients if needed. Review the transaction summary, then sign with your password or biometrics.
 
 ### Node Configuration
-Truffle ships with a set of public Ergo nodes and automatically distributes requests across them for speed and resilience. You can add your own node URL in **Settings → Network** for maximum reliability.
+TrufflΣ ships with a set of public Ergo nodes and automatically distributes requests across them for speed and resilience. You can add your own node URL in **Settings → Network** for maximum reliability.
 
 ### Check TX Mode
 In **Settings → Advanced**, you can enable **Check TX mode** — transactions are validated by the node but never broadcast. Useful for verifying amounts before going live.
@@ -104,7 +104,7 @@ In **Settings → Advanced**, you can enable **Check TX mode** — transactions 
 
 ## Philosophy: Speed First
 
-Truffle is built to be **fast and direct**:
+TrufflΣ is built to be **fast and direct**:
 - Pool data and token metadata are cached locally so the app is ready instantly on launch.
 - The node pool distributes read requests across multiple nodes in parallel for snappy quotes and balance fetches.
 - The UI updates progressively as data arrives — you see prices and balances as soon as they're ready, not after a full sync completes.
