@@ -548,6 +548,37 @@ fun SettingsScreen(
                     )
                 }
 
+                TogaRow(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 10.dp, end = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Always use selected node to submit tx",
+                        color = ColorText,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(
+                        checked = uiState.strictSubmitNode,
+                        onCheckedChange = { viewModel.setStrictSubmitNode(it) },
+                        modifier = Modifier.scale(0.8f),
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Color(0xFF67B0A2),
+                            checkedTrackColor = Color(0xFF67B0A2).copy(alpha = 0.5f)
+                        )
+                    )
+                }
+                
+                Text(
+                    text = "If enabled, TRUFFLΣ strictly submits transactions to your selected primary node. If disabled, TRUFFLΣ transparently routes submissions dynamically across all healthy nodes for maximum reliability.",
+                    color = ColorTextDim,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(start = 14.dp, end = 14.dp, bottom = 10.dp)
+                )
+
                 // Oracle Data Section
                 Text(
                     text = "ORACLE DATA",
@@ -623,6 +654,9 @@ fun SettingsScreen(
                         getName = { it.substringBefore(":") },
                         getId = { it.substringAfter(": ") },
                         getBalance = { null },
+                        getVerificationStatus = {
+                            if (uiState.deadNodes.contains(it.substringAfter(": "))) 3 else 0
+                        },
                         showFullId = true,
                         showSearch = false
                     )

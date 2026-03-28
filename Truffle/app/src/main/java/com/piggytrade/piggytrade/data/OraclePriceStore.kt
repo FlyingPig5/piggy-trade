@@ -103,7 +103,7 @@ class OraclePriceStore(private val context: Context) {
     fun loadAll() {
         useOracle = loadFromFile("oracle_use.json")
         sigUsdOracle = loadFromFile("oracle_sigusd.json")
-        sigUsdDex = loadFromFile("dex_sigusd.json")
+        sigUsdDex = loadFromFile("oracle_dex_sigusd.json")
         isFirstSync = useOracle.prices.isEmpty() && sigUsdOracle.prices.isEmpty() && sigUsdDex.prices.isEmpty()
 
         if (BuildConfig.DEBUG) Log.d(TAG, "Loaded: USE=${useOracle.prices.size} SigUSD=${sigUsdOracle.prices.size} DEX=${sigUsdDex.prices.size} firstSync=$isFirstSync")
@@ -180,7 +180,7 @@ class OraclePriceStore(private val context: Context) {
             }
             syncProgressPercent = 0f
             if (BuildConfig.DEBUG) Log.d(TAG, "Starting SigUSD DEX sync: complete=${sigUsdDex.syncComplete} offset=${sigUsdDex.lastScanOffset} prices=${sigUsdDex.prices.size}")
-            syncDexPool(nodePool, SIGUSD_DEX_POOL_NFT, sigUsdDex, "dex_sigusd.json")
+            syncDexPool(nodePool, SIGUSD_DEX_POOL_NFT, sigUsdDex, "oracle_dex_sigusd.json")
 
             syncProgressLabel = ""
             syncProgressPercent = -1f
@@ -915,7 +915,7 @@ class OraclePriceStore(private val context: Context) {
 
     /** Delete all cached oracle data files and reset in-memory state */
     fun clearAll() {
-        listOf("oracle_use.json", "oracle_sigusd.json", "dex_sigusd.json").forEach { filename ->
+        listOf("oracle_use.json", "oracle_sigusd.json", "oracle_dex_sigusd.json").forEach { filename ->
             try { File(context.filesDir, filename).delete() } catch (_: Exception) {}
         }
         // Also delete any token dex files

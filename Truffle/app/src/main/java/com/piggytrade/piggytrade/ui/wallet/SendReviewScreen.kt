@@ -104,8 +104,12 @@ fun SendReviewScreen(
                 )
 
                 // Tokens being sent
+                var tokenInfoId by remember { mutableStateOf<String?>(null) }
                 for ((tokenId, amount) in review.totalTokensOut) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = if (tokenId.length > 5) Modifier.clickable { tokenInfoId = tokenId } else Modifier
+                    ) {
                         TokenImage(tokenId = tokenId, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
@@ -116,6 +120,9 @@ fun SendReviewScreen(
                         )
                     }
                     Spacer(modifier = Modifier.height(2.dp))
+                }
+                tokenInfoId?.let { tid ->
+                    TokenInfoPopup(tokenId = tid, viewModel = viewModel, onDismiss = { tokenInfoId = null })
                 }
 
                 // Miner fee
@@ -160,22 +167,29 @@ fun SendReviewScreen(
                             // ERG amount
                             Text(
                                 text = "${r.ergAmount} ERG",
-                                color = ColorSent,
+                                color = Color.White,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.SemiBold
                             )
 
                             // Tokens for this recipient
+                            var recipientTokenInfoId by remember { mutableStateOf<String?>(null) }
                             for (t in r.tokens) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = if (t.tokenId.length > 5) Modifier.clickable { recipientTokenInfoId = t.tokenId } else Modifier
+                                ) {
                                     TokenImage(tokenId = t.tokenId, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
                                         text = "${t.amount} ${viewModel.getTokenName(t.tokenId)}",
-                                        color = ColorSent,
+                                        color = Color.White,
                                         fontSize = 13.sp
                                     )
                                 }
+                            }
+                            recipientTokenInfoId?.let { tid ->
+                                TokenInfoPopup(tokenId = tid, viewModel = viewModel, onDismiss = { recipientTokenInfoId = null })
                             }
                         }
                     }

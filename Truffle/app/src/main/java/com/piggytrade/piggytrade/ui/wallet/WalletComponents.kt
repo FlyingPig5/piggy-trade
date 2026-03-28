@@ -4,14 +4,22 @@ import com.piggytrade.piggytrade.ui.common.*
 import com.piggytrade.piggytrade.ui.swap.SwapState
 import com.piggytrade.piggytrade.ui.swap.SwapViewModel
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -20,11 +28,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.piggytrade.piggytrade.R
+import com.piggytrade.piggytrade.ui.swap.NodeStatus
 
 @Composable
 fun AppHeader(
     isLoading: Boolean,
-    onNavigateToSettings: () -> Unit
+    onNavigateToSettings: () -> Unit,
+    nodeStatus: NodeStatus = NodeStatus.Trying("")
 ) {
     Row(
         modifier = Modifier
@@ -48,7 +58,10 @@ fun AppHeader(
                 contentScale = androidx.compose.ui.layout.ContentScale.FillHeight
             )
         }
-        
+
+        // Center: Subtle node status pill
+        NodeStatusPill(nodeStatus = nodeStatus)
+
         // Right: Loading + Settings
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (isLoading) {
@@ -59,7 +72,7 @@ fun AppHeader(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
             }
-            
+
             TogaIconButton(
                 icon = "\uE8B8", // ICON_COG
                 onClick = onNavigateToSettings,
@@ -67,6 +80,78 @@ fun AppHeader(
                 bgColor = Color.Transparent,
                 radius = 10.dp
             )
+        }
+    }
+}
+
+/**
+ * A compact, subtle pill that shows which node the app is talking to and whether it's reachable.
+ * Intentionally low-contrast — it's informational, not alarming.
+ */
+@Composable
+private fun NodeStatusPill(nodeStatus: NodeStatus) {
+    val infiniteTransition = rememberInfiniteTransition(label = "nodePulse")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1.0f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseAlpha"
+    )
+
+    val isConnecting = nodeStatus is NodeStatus.Trying
+
+    val dotColor = when (nodeStatus) {
+        is NodeStatus.Trying   -> Color(0xFF8B949E)
+        is NodeStatus.Connected -> Color(0xFF3FB950)
+        is NodeStatus.Failed   -> Color(0xFFE57373)
+    }
+
+    val statusLabel = when (nodeStatus) {
+        is NodeStatus.Trying   -> "Connecting to node:"
+        is NodeStatus.Connected -> "Connected:"
+        is NodeStatus.Failed   -> "Node unreachable"
+    }
+
+    val hostLabel: String? = when (nodeStatus) {
+        is NodeStatus.Trying   -> nodeStatus.url.removePrefix("https://").removePrefix("http://").substringBefore("/").ifEmpty { null }
+        is NodeStatus.Connected -> nodeStatus.url.removePrefix("https://").removePrefix("http://").substringBefore("/").ifEmpty { null }
+        is NodeStatus.Failed   -> null
+    }
+
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color.White.copy(alpha = 0.05f))
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(5.dp)
+                .clip(CircleShape)
+                .background(dotColor.copy(alpha = if (isConnecting) pulseAlpha else 0.9f))
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Column {
+            Text(
+                text = statusLabel,
+                color = dotColor.copy(alpha = 0.55f),
+                fontSize = 8.sp,
+                fontWeight = FontWeight.Normal,
+                maxLines = 1
+            )
+            if (hostLabel != null) {
+                Text(
+                    text = hostLabel,
+                    color = dotColor.copy(alpha = 0.85f),
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1
+                )
+            }
         }
     }
 }
@@ -202,7 +287,8 @@ fun WalletSelectorRow(
     // TOP: App header — outside the wallet card, on main background
     AppHeader(
         isLoading = uiState.isLoadingQuote || uiState.isLoadingHistory,
-        onNavigateToSettings = onNavigateToSettings
+        onNavigateToSettings = onNavigateToSettings,
+        nodeStatus = uiState.nodeStatus
     )
 
     if (showWalletSelector) {

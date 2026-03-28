@@ -21,6 +21,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -42,8 +43,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountBalance
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.CurrencyExchange
 import androidx.compose.material.icons.rounded.OpenInNew
@@ -176,16 +181,16 @@ fun EcosystemScreen(viewModel: SwapViewModel, marketViewModel: MarketViewModel, 
             }
 
             // Filter chips: DEX Swaps | Stablecoins | Market [| Latest Trades (token only)]
-            val baseChips = listOf("dex" to "DEX Swaps", "stablecoin" to "Stablecoins", "market" to "Market")
+            val baseChips = listOf("dex" to "DEX Swaps", "stablecoin" to "Stable Coins", "market" to "Market")
             val chips = if (selectedChartToken != null)
-                baseChips + ("trades" to "Latest Trades")
+                baseChips + ("trades" to "Latest Trades") + ("holders" to "Top Holders")
             else {
-                // If filter was "trades" but no token selected, reset to "dex"
-                if (filter == "trades") filter = "dex"
+                // If filter was "trades" or "holders" but no token selected, reset to "dex"
+                if (filter == "trades" || filter == "holders") filter = "dex"
                 baseChips
             }
             Row(
-                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).height(IntrinsicSize.Max),
                 horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally)
             ) {
                 chips.forEach { (key, label) ->
@@ -197,19 +202,28 @@ fun EcosystemScreen(viewModel: SwapViewModel, marketViewModel: MarketViewModel, 
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = bgColor,
-                        modifier = Modifier.clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = { filter = key }
-                        )
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = { filter = key }
+                            )
                     ) {
-                        Text(
-                            text = label,
-                            color = if (isActive) ColorBg else Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                        )
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            Text(
+                                text = label.replace(" ", "\n"),
+                                color = if (isActive) ColorBg else Color.White,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 2.dp, vertical = 6.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -464,6 +478,212 @@ fun EcosystemScreen(viewModel: SwapViewModel, marketViewModel: MarketViewModel, 
                             }
                         }
                     }
+                }
+            } else if (filter == "holders" && selectedChartToken != null) {
+                // ── Top 100 Holders for selected token ──────────────────────
+                val tokenId = remember(selectedChartToken) { viewModel.getTokenId(selectedChartToken!!) }
+                val decimals = remember(tokenId) { viewModel.getTokenDecimals(tokenId) }
+
+                var holders by remember(tokenId) { mutableStateOf<List<Pair<String, Long>>>(emptyList()) }
+                var lastSyncedMs by remember(tokenId) { mutableStateOf(0L) }
+                var isLoadingHolders by remember(tokenId) { mutableStateOf(true) }
+                var fetchedBoxes by remember(tokenId) { mutableStateOf(0) }
+                var holdersError by remember(tokenId) { mutableStateOf<String?>(null) }
+                var emissionAmount by remember(tokenId) { mutableStateOf(0L) }
+                var showExploreAddr by remember { mutableStateOf<String?>(null) }
+                var forceRefreshTrigger by remember { mutableStateOf(0) }
+
+                LaunchedEffect(tokenId, forceRefreshTrigger) {
+                    isLoadingHolders = true
+                    holdersError = null
+                    try {
+                        val info = viewModel.fetchTokenMintInfo(tokenId)
+                        emissionAmount = info.emissionAmount
+                        // Fetch holders (uses cache if forceRefreshTrigger == 0)
+                        val entry = viewModel.fetchTopHolders(
+                            tokenId = tokenId,
+                            decimals = decimals,
+                            forceRefresh = forceRefreshTrigger > 0,
+                            onProgress = { fetched -> fetchedBoxes = fetched }
+                        )
+                        holders = entry.holders
+                        lastSyncedMs = entry.lastSyncedMs
+                    } catch (e: Exception) {
+                        holdersError = e.message ?: "Failed to fetch holders"
+                    }
+                    isLoadingHolders = false
+                }
+
+                if (isLoadingHolders) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CircularProgressIndicator(color = ColorAccent, modifier = Modifier.size(32.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text("Scanning $selectedChartToken holders...", color = Color.White, fontSize = 13.sp)
+                        Text(
+                            "$fetchedBoxes boxes fetched",
+                            color = ColorAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Tokens with many holders may take\na minute or more to fully scan.",
+                            color = ColorTextDim, fontSize = 11.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else if (holdersError != null) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 30.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(holdersError!!, color = ColorDanger, fontSize = 13.sp)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        item {
+                            if (lastSyncedMs > 0) {
+                                val timeAgo = run {
+                                    val diffSecs = (System.currentTimeMillis() - lastSyncedMs) / 1000
+                                    when {
+                                        diffSecs < 60 -> "just now"
+                                        diffSecs < 3600 -> "${diffSecs / 60} mins ago"
+                                        diffSecs < 86400 -> "${diffSecs / 3600} hours ago"
+                                        else -> "${diffSecs / 86400} days ago"
+                                    }
+                                }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 8.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { forceRefreshTrigger++ }
+                                        .padding(vertical = 8.dp),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Rounded.Refresh, contentDescription = "Refresh", tint = ColorTextDim, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Refresh top holders (last synced $timeAgo)", color = ColorTextDim, fontSize = 11.sp)
+                                }
+                            }
+                        }
+                        // Header
+                        stickyHeader {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().background(ColorCard).padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("#", color = ColorTextDim, fontSize = 10.sp, modifier = Modifier.width(28.dp))
+                                Text("Address", color = ColorTextDim, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                                Text("Balance", color = ColorTextDim, fontSize = 10.sp, textAlign = TextAlign.End, modifier = Modifier.width(125.dp))
+                                Text("%", color = ColorTextDim, fontSize = 10.sp, textAlign = TextAlign.End, modifier = Modifier.width(50.dp))
+                            }
+                        }
+                        itemsIndexed(holders) { index, (address, amount) ->
+                            val formattedBalance = if (decimals > 0) {
+                                val divisor = Math.pow(10.0, decimals.toDouble())
+                                String.format("%,.${minOf(decimals, 4)}f", amount.toDouble() / divisor)
+                            } else {
+                                String.format("%,d", amount)
+                            }
+                            val truncAddr = if (address.length > 20)
+                                "${address.take(8)}...${address.takeLast(6)}"
+                            else address
+
+                            val pct = if (emissionAmount > 0)
+                                String.format("%.1f%%", amount.toDouble() / emissionAmount.toDouble() * 100.0)
+                            else ""
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (index % 2 == 0) ColorInputBg else Color.Transparent)
+                                    .clickable { showExploreAddr = address }
+                                    .padding(horizontal = 6.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "${index + 1}",
+                                    color = ColorTextDim,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.width(28.dp)
+                                )
+                                Text(
+                                    truncAddr,
+                                    color = ColorAccent,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    formattedBalance,
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.End,
+                                    modifier = Modifier.width(125.dp)
+                                )
+                                Text(
+                                    pct,
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    textAlign = TextAlign.End,
+                                    modifier = Modifier.width(50.dp)
+                                )
+                            }
+                        }
+                        item {
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                "${holders.size} addresses \u2022 $fetchedBoxes boxes scanned",
+                                color = ColorTextDim, fontSize = 10.sp,
+                                modifier = Modifier.padding(start = 4.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Explore Wallet confirmation for holder address
+                showExploreAddr?.let { addr ->
+                    val truncAddr = if (addr.length > 20) "${addr.take(10)}...${addr.takeLast(8)}" else addr
+                    AlertDialog(
+                        onDismissRequest = { showExploreAddr = null },
+                        containerColor = ColorCard,
+                        title = { Text("Explore Wallet", color = Color.White, fontWeight = FontWeight.Bold) },
+                        text = {
+                            Column {
+                                Text("View balance & transactions for:", color = ColorTextDim, fontSize = 13.sp)
+                                Spacer(Modifier.height(6.dp))
+                                Text(
+                                    truncAddr,
+                                    color = ColorAccent,
+                                    fontSize = 13.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                val target = showExploreAddr!!
+                                showExploreAddr = null
+                                onNavigateToAddressExplorer(target)
+                            }) {
+                                Text("Explore", color = ColorAccent, fontWeight = FontWeight.Bold)
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showExploreAddr = null }) {
+                                Text("Cancel", color = ColorTextDim)
+                            }
+                        }
+                    )
                 }
             } else if (filter == "market") {
                 // ── All Tokens Market View ──────────────────────────────────

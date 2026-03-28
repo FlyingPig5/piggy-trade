@@ -490,6 +490,8 @@ private fun RecipientCard(
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = ColorText,
+                        unfocusedTextColor = ColorText,
                         focusedBorderColor = Color.Transparent,
                         unfocusedBorderColor = Color.Transparent,
                         cursorColor = ColorAccent
@@ -595,6 +597,8 @@ private fun SendTokenRow(
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
             colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = ColorText,
+                unfocusedTextColor = ColorText,
                 focusedBorderColor = Color.Transparent,
                 unfocusedBorderColor = Color.Transparent,
                 cursorColor = ColorAccent

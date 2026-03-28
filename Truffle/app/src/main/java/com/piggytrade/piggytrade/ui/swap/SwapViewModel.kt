@@ -40,6 +40,13 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/** Represents the connectivity state with the active Ergo node. */
+sealed class NodeStatus {
+    data class Trying(val url: String) : NodeStatus()
+    data class Connected(val url: String) : NodeStatus()
+    data class Failed(val url: String) : NodeStatus()
+}
+
 data class SwapState(
     val fromAsset: String = "",
     val toAsset: String = "",
@@ -90,6 +97,7 @@ data class SwapState(
     val isToAssetFavorite: Boolean = false,
     val serviceFee: Double = 0.0,
     val allowHttpNodes: Boolean = false,
+    val strictSubmitNode: Boolean = false,
     val walletFunctionalityEnabled: Boolean = false,
     val activeTab: String = "dex", // "dex", "wallet", "bank", "portfolio", "ecosystem"
 
@@ -133,7 +141,11 @@ data class SwapState(
     val explorerHistoryOffset: Int = 0,
     val isLoadingExplorer: Boolean = false,
     val isLoadingExplorerHistory: Boolean = false,
-    val savedExplorerAddresses: Map<String, String> = emptyMap() // address -> label
+    val savedExplorerAddresses: Map<String, String> = emptyMap(), // address -> label
+
+    // ─── NODE STATUS ─────────────────────────────────────────────────────
+    val nodeStatus: NodeStatus = NodeStatus.Trying(""),
+    val deadNodes: Set<String> = emptySet()
 )
 
 data class PoolMapping(
@@ -247,7 +259,25 @@ data class SendReviewParams(
     val ergopayUrl: String = ""
 )
 
+data class TokenMintInfo(
+    val name: String,
+    val description: String,
+    val emissionAmount: Long,
+    val decimals: Int,
+    val mintAddress: String,
+    val mintTxId: String,
+    val mintBlockHeight: Int?,
+    val mintTimestamp: Long?
+)
+
+data class HoldersCacheEntry(
+    val holders: List<Pair<String, Long>>,
+    val lastSyncedMs: Long
+)
+
 class SwapViewModel(application: Application) : AndroidViewModel(application) {
+
+    private val topHoldersCache = mutableMapOf<String, HoldersCacheEntry>()
 
     private val TAG = "SwapViewModel"
     private val session = (application as com.piggytrade.piggytrade.TruffleApplication).sessionManager
@@ -323,6 +353,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 numFavorites = numFavs,
                 showFavorites = (preferenceManager.loadSettings()["show_favorites"] as? Boolean) ?: false,
                 allowHttpNodes = (preferenceManager.loadSettings()["allow_http_nodes"] as? Boolean) ?: false,
+                strictSubmitNode = (preferenceManager.loadSettings()["strict_submit_node"] as? Boolean) ?: false,
                 walletFunctionalityEnabled = (preferenceManager.loadSettings()["wallet_functionality"] as? Boolean) ?: false,
                 savedExplorerAddresses = preferenceManager.loadExplorerAddresses()
             )
@@ -332,28 +363,95 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         if (BuildConfig.DEBUG) Log.d(TAG, "SwapViewModel instance created.")
-        
+
         // 1. Initial immediate list setup (no network)
         loadPoolMappings(fetchLiquidity = false)
 
         // 2. Offload heavy background tasks
         viewModelScope.launch {
-            // Sequential initialization
             withContext(kotlinx.coroutines.Dispatchers.Default) {
                 tokenRepository.tradeMapper
             }
 
-            // 1. Initialize Node Client (wait for it)
-            initializeNodeClient()
+            // Probe all pool nodes and initialize primary node client in parallel.
+            // probeAll() marks dead nodes so that subsequent readNode() calls skip them.
+            // initializeNodeClient() is independent — it only touches the primary node.
+            kotlinx.coroutines.coroutineScope {
+                val probeJob = async(kotlinx.coroutines.Dispatchers.IO) {
+                    nodePool.probeAll(timeoutMs = 3000L)
+                }
+                val initJob = async {
+                    initializeNodeClient()
+                }
+                probeJob.await()
+                initJob.await()
+                checkAndReplaceDeadPrimaryNode()
+            }
 
-            // 2. Fetch Wallet Balances (now client is ready)
+            // 2. Fetch Wallet Balances (pool is now probed, primary node is ready)
             fetchWalletBalances()
 
-            // 3. First launch sync if needed
+            // First launch sync if needed
             if (!tokenRepository.hasTokenFiles()) {
                 syncTokenList(isFirstLaunch = true)
             }
-            // Note: syncOraclePrices() is now called on MarketViewModel from MainActivity
+            
+            // Mirror active read operations across all ViewModels to the Top Bar UI
+            viewModelScope.launch {
+                nodePool.activeNodeUrl.collect { url ->
+                    if (url != null) {
+                        _uiState.value = _uiState.value.copy(nodeStatus = NodeStatus.Trying(url))
+                    } else {
+                        val priUrl = _uiState.value.nodeUrl
+                        if (priUrl.isNotEmpty()) {
+                            _uiState.value = _uiState.value.copy(nodeStatus = NodeStatus.Connected(priUrl))
+                        }
+                    }
+                }
+            }
+            
+            // Mirror dead nodes for Settings UI dropdown indicators
+            viewModelScope.launch {
+                nodePool.deadNodeUrls.collect { dead ->
+                    _uiState.value = _uiState.value.copy(deadNodes = dead)
+                }
+            }
+            
+            // Mirror node list from NodeManager to prevent state drift
+            viewModelScope.launch {
+                nodeManager.nodes.collect { nodeList ->
+                    _uiState.value = _uiState.value.copy(nodes = nodeList)
+                }
+            }
+        }
+    }
+    
+    fun reprobeNodes() {
+        viewModelScope.launch {
+            withContext(kotlinx.coroutines.Dispatchers.IO) {
+                nodePool.probeAll()
+                checkAndReplaceDeadPrimaryNode()
+            }
+        }
+    }
+
+    private suspend fun checkAndReplaceDeadPrimaryNode() {
+        val deadUrls = nodePool.deadNodeUrls.value
+        val primaryUrl = nodeManager.nodeUrl.value
+        if (primaryUrl.isNotEmpty() && deadUrls.any { it.contains(primaryUrl) || primaryUrl.contains(it) }) {
+            val allNodes = nodeManager.nodes.value
+            val liveNodeIndices = allNodes.indices.filter { idx ->
+                val nodeUrl = allNodes[idx].substringAfter(": ")
+                !deadUrls.any { it.contains(nodeUrl) || nodeUrl.contains(it) }
+            }
+            if (liveNodeIndices.isNotEmpty()) {
+                val randomIdx = liveNodeIndices.random()
+                nodeManager.setSelectedNodeIndex(randomIdx)
+                if (BuildConfig.DEBUG) android.util.Log.i(TAG, "Primary node $primaryUrl is dead. Auto-switching to live node index $randomIdx")
+                withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    initializeNodeClient()
+                }
+            }
         }
     }
 
@@ -362,11 +460,10 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
     fun resolveErgoTree(ergoTree: String) {
         if (ergoTree.isEmpty() || _resolvedAddresses.value.containsKey(ergoTree)) return
-        
+
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val client = nodeClient ?: return@launch
-                val res = client.api.ergoTreeToAddress(ergoTree)
+                val res = readNode { it.api.ergoTreeToAddress(ergoTree) }
                 val address = (res["address"] as? String) ?: ""
                 if (address.isNotEmpty()) {
                     withContext(Dispatchers.Main) {
@@ -401,21 +498,116 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun initializeNodeClient() {
         val allowHttp = _uiState.value.allowHttpNodes
-        nodeManager.initializeNodeClient(allowHttp) { client, finalUrl ->
-            // Runs on Main — update state and rebuild pool mappings
-            trader = Trader(client, null, tokenRepository.tokens)
-            _uiState.value = _uiState.value.copy(
-                nodeUrl = finalUrl,
-                nodes = nodeManager.nodes.value,
-                selectedNodeIndex = nodeManager.selectedNodeIndex.value
+        val attemptUrl = run {
+            val nodes = _uiState.value.nodes
+            val idx = _uiState.value.selectedNodeIndex
+            val raw = nodes.getOrNull(idx) ?: ""
+            when {
+                raw.contains(": ") -> raw.substringAfter(": ")
+                raw.contains("(") -> raw.substringAfter("(").substringBefore(")")
+                else -> raw
+            }
+        }
+        if (attemptUrl.isNotEmpty()) {
+            _uiState.value = _uiState.value.copy(nodeStatus = NodeStatus.Trying(attemptUrl))
+        }
+        try {
+            nodeManager.initializeNodeClient(allowHttp,
+                onClientReady = { client, finalUrl ->
+                    // Runs on Main — update state and rebuild pool mappings
+                    trader = Trader(client, null, tokenRepository.tokens)
+                    _uiState.value = _uiState.value.copy(
+                        nodeUrl = finalUrl,
+                        nodes = nodeManager.nodes.value,
+                        selectedNodeIndex = nodeManager.selectedNodeIndex.value,
+                        nodeStatus = NodeStatus.Connected(finalUrl)
+                    )
+                    loadPoolMappings(fetchLiquidity = false)
+                },
+                onFailed = { failedUrl ->
+                    _uiState.value = _uiState.value.copy(
+                        nodeStatus = NodeStatus.Failed(failedUrl)
+                    )
+                }
             )
-            loadPoolMappings(fetchLiquidity = false)
+        } catch (e: Exception) {
+            _uiState.value = _uiState.value.copy(
+                nodeStatus = NodeStatus.Failed(attemptUrl.ifEmpty { "unknown" })
+            )
         }
     }
 
     private fun updateNodeClient() {
         viewModelScope.launch {
             initializeNodeClient()
+        }
+    }
+
+    fun addNode(name: String, url: String) {
+        val currentNodesMap = preferenceManager.loadNodes().toMutableMap()
+        val key = name.ifEmpty { "Custom${currentNodesMap.size + 1}" }
+        currentNodesMap[key] = mapOf("url" to url)
+        preferenceManager.saveNodes(currentNodesMap)
+
+        nodeManager.reloadNodes()
+        val newNodes = nodeManager.nodes.value
+        val newIndex = newNodes.indexOfFirst { it.startsWith("$key:") }.coerceAtLeast(0)
+
+        // Update UI state with new list & selection, then trigger client rebuild
+        _uiState.value = _uiState.value.copy(
+            nodes = newNodes,
+            selectedNodeIndex = newIndex
+        )
+        nodeManager.setSelectedNodeIndex(newIndex)
+        updateNodeClient()
+    }
+
+    /**
+     * Execute a read-only node call through the rotating NodePool with automatic retry.
+     * Updates [nodeStatus] as it cycles through nodes:
+     *   Trying(url) → Connected(url) on success, or Failed(url) if all retries fail.
+     *
+     * Use this for ALL read ops (balances, quotes, history, etc.).
+     * TX building and submission use [nodeClient] directly for consistency.
+     */
+    private suspend fun <T> readNode(block: suspend (NodeClient) -> T): T {
+        return nodePool.withRetryTracked(
+            maxRetries = nodePool.size.coerceAtLeast(1),
+            onTrying = { url ->
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(nodeStatus = NodeStatus.Trying(url))
+                }
+            }
+        ) { client ->
+            val result = block(client)
+            withContext(Dispatchers.Main) {
+                _uiState.value = _uiState.value.copy(nodeStatus = NodeStatus.Connected(client.nodeUrl))
+            }
+            result
+        }
+    }
+
+    /**
+     * Converts raw network/SSL exception messages into user-friendly strings.
+     * Prevents technical jargon like "Unable to parse TLS packet header" from
+     * appearing directly in the UI.
+     */
+    private fun sanitizeNodeError(e: Exception): String {
+        val msg = e.message?.lowercase() ?: ""
+        return when {
+            msg.contains("tls") || msg.contains("ssl") || msg.contains("handshake") ||
+            msg.contains("certificate") || msg.contains("socket") || msg.contains("tsl") ->
+                "Node unreachable — retrying"
+            msg.contains("timeout") || msg.contains("timed out") ->
+                "Node timed out — retrying"
+            msg.contains("connect") || msg.contains("connection refused") ||
+            msg.contains("failed to connect") ->
+                "Cannot connect to node — retrying"
+            msg.contains("all nodes failed") ->
+                "All nodes unreachable — check connection"
+            msg.contains("unknown host") || msg.contains("unable to resolve") ->
+                "Node address invalid"
+            else -> e.message ?: "Network error"
         }
     }
 
@@ -557,6 +749,13 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         preferenceManager.saveSettings(settings)
     }
 
+    fun setStrictSubmitNode(strict: Boolean) {
+        _uiState.value = _uiState.value.copy(strictSubmitNode = strict)
+        val settings = preferenceManager.loadSettings().toMutableMap()
+        settings["strict_submit_node"] = strict
+        preferenceManager.saveSettings(settings)
+    }
+
     fun setWalletFunctionalityEnabled(enabled: Boolean) {
         _uiState.value = _uiState.value.copy(walletFunctionalityEnabled = enabled)
         val settings = preferenceManager.loadSettings().toMutableMap()
@@ -617,23 +816,20 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.value = _uiState.value.copy(isLoadingWallet = true)
         viewModelScope.launch {
             try {
-                val client = nodeClient ?: return@launch
                 val checkMempool = _uiState.value.includeUnconfirmed
-                
+
                 val tokens: Map<String, Long>
                 val nanoerg: Long
                 val addressBoxMap: Map<String, List<Map<String, Any>>>
 
                 if (addressesToFetch.size == 1) {
-                    // Single address — use existing efficient path
                     val addr = addressesToFetch.first()
-                    val (t, n, boxes) = client.getMyAssets(addr, checkMempool)
+                    val (t, n, boxes) = readNode { it.getMyAssets(addr, checkMempool) }
                     tokens = t
                     nanoerg = n
                     addressBoxMap = mapOf(addr to boxes)
                 } else {
-                    // Multi-address — aggregate across all selected addresses
-                    val (t, n, boxMap) = client.getMyAssetsMulti(addressesToFetch, checkMempool)
+                    val (t, n, boxMap) = readNode { it.getMyAssetsMulti(addressesToFetch, checkMempool) }
                     tokens = t
                     nanoerg = n
                     addressBoxMap = boxMap
@@ -647,20 +843,17 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 lastWalletFetchMs = System.currentTimeMillis()
                 updateBalances()
-                // IMPORTANT: Pass fetchLiquidity = false here. 
-                // We only want to update the token list sorting/balances, not refetch every LP.
                 loadPoolMappings(fetchLiquidity = false)
-                
+
+                // Fetch token metadata for unknown tokens (reuse whichever pool node answered)
                 tokens.keys.forEach { tid ->
                     if (tid != "ERG") {
                         val currentName = tokenRepository.getTokenName(tid)
                         val isGeneric = currentName.startsWith(tid.take(5)) || currentName == tid
                         val hasNoDec = tokenRepository.getTokenDecimals(tid) == 0 && tid != "ERG"
-                        
-                        // Only fetch if name is generic OR decimals are missing
                         if (isGeneric || hasNoDec) {
                             try {
-                                client.api.getTokenInfo(tid) ?.let { info ->
+                                readNode { it.api.getTokenInfo(tid) }?.let { info ->
                                     tokenRepository.saveTokenInfo(tid, info)
                                 }
                             } catch (e: Exception) {
@@ -670,7 +863,13 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(isLoadingWallet = false)
+                _uiState.value = _uiState.value.copy(
+                    isLoadingWallet = false,
+                    nodeStatus = NodeStatus.Failed(
+                        (_uiState.value.nodeStatus as? NodeStatus.Trying)?.url
+                            ?: _uiState.value.nodeUrl.ifEmpty { "unknown" }
+                    )
+                )
             }
         }
     }
@@ -710,7 +909,6 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 val GAP_LIMIT = 5
                 val derived = mutableListOf<String>()
                 var consecutiveEmpty = 0
-                val client = nodeClient
 
                 for (i in 0 until MAX_SCAN) {
                     val addr = try {
@@ -721,10 +919,10 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     derived.add(addr)
 
-                    // Check if this address has any UTXOs on-chain
-                    if (client != null && i > 0) {
+                    // Check if this address has any UTXOs on-chain (use pool node for reads)
+                    if (i > 0) {
                         try {
-                            val (_, nanoerg, boxes) = client.getMyAssets(addr, false)
+                            val (_, nanoerg, boxes) = readNode { it.getMyAssets(addr, false) }
                             if (boxes.isEmpty() && nanoerg == 0L) {
                                 consecutiveEmpty++
                             } else {
@@ -1134,15 +1332,16 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         bankQuoteJob?.cancel()
         bankQuoteJob = viewModelScope.launch(Dispatchers.IO) {
             val protocol = StablecoinRegistry.getById(_uiState.value.activeProtocolId) ?: return@launch
-            val client = nodeClient ?: return@launch
             try {
-                val quote = protocol.getQuote(client, amount, _uiState.value.selectedAddress, _uiState.value.includeUnconfirmed)
+                val quote = readNode { client ->
+                    protocol.getQuote(client, amount, _uiState.value.selectedAddress, _uiState.value.includeUnconfirmed)
+                }
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(bankQuote = quote, bankError = null)
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    _uiState.value = _uiState.value.copy(bankError = e.message)
+                    _uiState.value = _uiState.value.copy(bankError = sanitizeNodeError(e))
                 }
             }
         }
@@ -1154,15 +1353,16 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         bankRedeemQuoteJob?.cancel()
         bankRedeemQuoteJob = viewModelScope.launch(Dispatchers.IO) {
             val protocol = StablecoinRegistry.getById(_uiState.value.activeProtocolId) ?: return@launch
-            val client = nodeClient ?: return@launch
             try {
-                val quote = protocol.getRedeemQuote(client, amount, _uiState.value.selectedAddress, _uiState.value.includeUnconfirmed)
+                val quote = readNode { client ->
+                    protocol.getRedeemQuote(client, amount, _uiState.value.selectedAddress, _uiState.value.includeUnconfirmed)
+                }
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(bankRedeemQuote = quote, bankError = null)
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    _uiState.value = _uiState.value.copy(bankError = e.message)
+                    _uiState.value = _uiState.value.copy(bankError = sanitizeNodeError(e))
                 }
             }
         }
@@ -1171,7 +1371,6 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     private fun refreshBankEligibility() {
         viewModelScope.launch(Dispatchers.IO) {
             val protocol = StablecoinRegistry.getById(_uiState.value.activeProtocolId) ?: return@launch
-            val client = nodeClient ?: return@launch
             val address = _uiState.value.selectedAddress
             if (address.isEmpty()) {
                 withContext(Dispatchers.Main) {
@@ -1186,14 +1385,16 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 _uiState.value = _uiState.value.copy(isBankLoading = true, bankError = null)
             }
             try {
-                if (BuildConfig.DEBUG) android.util.Log.d("BankVM", "checkEligibility using node: ${client.nodeUrl}, address: $address, protocol: ${protocol.id}")
-                val eligibility = protocol.checkEligibility(client, address, _uiState.value.includeUnconfirmed)
+                val eligibility = readNode { client ->
+                    if (BuildConfig.DEBUG) android.util.Log.d("BankVM", "checkEligibility using node: ${client.nodeUrl}, address: $address, protocol: ${protocol.id}")
+                    protocol.checkEligibility(client, address, _uiState.value.includeUnconfirmed)
+                }
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(bankEligibility = eligibility, isBankLoading = false)
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    _uiState.value = _uiState.value.copy(isBankLoading = false, bankError = e.message)
+                    _uiState.value = _uiState.value.copy(isBankLoading = false, bankError = sanitizeNodeError(e))
                 }
             }
         }
@@ -1507,15 +1708,19 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 val route = withContext(kotlinx.coroutines.Dispatchers.Default) {
                     tokenRepository.tradeMapper.resolve(current.fromAsset, current.toAsset)
                 }
-                if (route != null && trader != null) {
-                    val (quote, impact) = trader!!.getQuote(
-                        poolKey = route.tokenKey,
-                        amount = amount,
-                        orderType = route.orderType,
-                        poolType = route.poolType,
-                        checkMempool = current.includeUnconfirmed
-                    )
+                if (route != null) {
+                    val (quote, impact) = readNode { poolClient ->
+                        val tempTrader = com.piggytrade.piggytrade.blockchain.Trader(poolClient, null, tokenRepository.tokens)
+                        tempTrader.getQuote(
+                            poolKey = route.tokenKey,
+                            amount = amount,
+                            orderType = route.orderType,
+                            poolType = route.poolType,
+                            checkMempool = current.includeUnconfirmed
+                        )
+                    }
                         val lpFee = (tokenRepository.tokens[route.tokenKey]?.get("fee") as? Number)?.toDouble() ?: 0.0
+
                         
                         // Calculate expected service fee
                         val ergValueForFee = if (current.fromAsset == "ERG") {
@@ -1549,7 +1754,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isLoadingQuote = false,
-                    toQuote = "Err: ${e.message}"
+                    toQuote = sanitizeNodeError(e)
                 )
             }
         }
@@ -1588,6 +1793,144 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
     fun getTokenName(tokenId: String) = tokenRepository.getTokenName(tokenId)
     fun getTokenDecimals(tokenId: String) = tokenRepository.getTokenDecimals(tokenId)
+
+    /**
+     * Fetch full minting info for a token by chaining three API calls:
+     * 1. /blockchain/token/byId/{tokenId}   → name, description, emissionAmount, decimals
+     * 2. /blockchain/box/byId/{tokenId}      → minting address, transactionId
+     * 3. /blockchain/transaction/byId/{txId} → block height, timestamp
+     */
+    suspend fun fetchTokenMintInfo(tokenId: String): TokenMintInfo {
+        // 1. Token metadata
+        val tokenInfo = readNode { it.api.getTokenInfo(tokenId) }
+            ?: throw Exception("Token not found")
+        val name = tokenInfo["name"] as? String ?: "Unknown"
+        val description = tokenInfo["description"] as? String ?: ""
+        val emissionAmount = (tokenInfo["emissionAmount"] as? Number)?.toLong() ?: 0L
+        val decimals = (tokenInfo["decimals"] as? Number)?.toInt() ?: 0
+
+        // 2. Minting box (box ID == token ID for the first issuance box)
+        val boxInfo = readNode { it.api.getBoxById(tokenId) }
+        val mintAddress = boxInfo["address"] as? String ?: "Unknown"
+        val mintTxId = boxInfo["transactionId"] as? String ?: ""
+
+        // 3. Minting transaction → timestamp & block height
+        var mintBlockHeight: Int? = null
+        var mintTimestamp: Long? = null
+        if (mintTxId.isNotEmpty()) {
+            val txInfo = readNode { it.api.getTransactionById(mintTxId) }
+            mintBlockHeight = (txInfo?.get("inclusionHeight") as? Number)?.toInt()
+            mintTimestamp = (txInfo?.get("timestamp") as? Number)?.toLong()
+        }
+
+        return TokenMintInfo(
+            name = name,
+            description = description,
+            emissionAmount = emissionAmount,
+            decimals = decimals,
+            mintAddress = mintAddress,
+            mintTxId = mintTxId,
+            mintBlockHeight = mintBlockHeight,
+            mintTimestamp = mintTimestamp
+        )
+    }
+
+    /**
+     * Fetch all unspent boxes holding [tokenId], aggregate token amounts by address,
+     * and return the top 100 holders sorted by balance descending.
+     *
+     * @param onProgress called with (boxesFetchedSoFar, isStillFetching) so the UI
+     *                   can display a live progress indicator.
+     * @return list of (address, totalAmount) pairs, top 100 by balance.
+     */
+    private fun loadTopHoldersCache(tokenId: String): HoldersCacheEntry? {
+        try {
+            val file = java.io.File(getApplication<Application>().filesDir, "holders_$tokenId.json")
+            if (!file.exists()) return null
+            val json = org.json.JSONObject(file.readText())
+            val lastSyncedMs = json.getLong("lastSyncedMs")
+            val arr = json.getJSONArray("holders")
+            val list = mutableListOf<Pair<String, Long>>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                list.add(obj.getString("a") to obj.getLong("v"))
+            }
+            return HoldersCacheEntry(list, lastSyncedMs)
+        } catch (e: Exception) { return null }
+    }
+
+    private fun saveTopHoldersCache(tokenId: String, entry: HoldersCacheEntry) {
+        try {
+            val arr = org.json.JSONArray()
+            for ((a, v) in entry.holders) {
+                arr.put(org.json.JSONObject().put("a", a).put("v", v))
+            }
+            val json = org.json.JSONObject().put("lastSyncedMs", entry.lastSyncedMs).put("holders", arr)
+            java.io.File(getApplication<Application>().filesDir, "holders_$tokenId.json").writeText(json.toString())
+        } catch (e: Exception) {
+            if (BuildConfig.DEBUG) Log.d(TAG, "Failed to save top holders cache: ${e.message}")
+        }
+    }
+
+    suspend fun fetchTopHolders(
+        tokenId: String,
+        decimals: Int,
+        forceRefresh: Boolean = false,
+        onProgress: suspend (fetched: Int) -> Unit = {}
+    ): HoldersCacheEntry {
+        if (!forceRefresh) {
+            topHoldersCache[tokenId]?.let { return it }
+            val diskCache = loadTopHoldersCache(tokenId)
+            if (diskCache != null) {
+                topHoldersCache[tokenId] = diskCache
+                return diskCache
+            }
+        }
+
+        val addressBalances = mutableMapOf<String, Long>()
+        var offset = 0
+        val limit = 500
+        var totalFetched = 0
+
+        while (true) {
+            val boxes = readNode { it.api.getUnspentBoxesByTokenId(
+                tokenId = tokenId,
+                offset = offset,
+                limit = limit,
+                sortDirection = "desc",
+                includeUnconfirmed = false
+            ) }
+
+            for (box in boxes) {
+                val address = box["address"] as? String ?: continue
+                @Suppress("UNCHECKED_CAST")
+                val assets = box["assets"] as? List<Map<String, Any>> ?: continue
+                for (asset in assets) {
+                    if ((asset["tokenId"] as? String) == tokenId) {
+                        val amount = (asset["amount"] as? Number)?.toLong() ?: 0L
+                        addressBalances[address] = (addressBalances[address] ?: 0L) + amount
+                    }
+                }
+            }
+
+            totalFetched += boxes.size
+            onProgress(totalFetched)
+
+            if (boxes.size < limit) break
+            offset += limit
+        }
+
+        val sortedList = addressBalances.entries
+            .sortedByDescending { it.value }
+            .take(100)
+            .map { it.key to it.value }
+
+        val entry = HoldersCacheEntry(sortedList, System.currentTimeMillis())
+        topHoldersCache[tokenId] = entry
+        saveTopHoldersCache(tokenId, entry)
+        return entry
+    }
+
     fun getVerificationStatus(tokenKey: String) = tokenRepository.getVerificationStatus(tokenKey)
     fun isWhitelisted(tokenKey: String): Boolean {
         val pid = tokenRepository.tokens[tokenKey]?.get("pid") as? String ?: ""
@@ -1810,10 +2153,18 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
                 val txId = try {
                     if (current.isSimulation) {
-                        client.api.checkTransaction(signedTxMap)
+                        if (current.strictSubmitNode) {
+                            client.api.checkTransaction(signedTxMap)
+                        } else {
+                            nodePool.withRetryTracked { it.api.checkTransaction(signedTxMap) }
+                        }
                         signedTxMap["id"] as? String ?: "Simulation"
                     } else {
-                        client.api.submitTransaction(signedTxMap)
+                        if (current.strictSubmitNode) {
+                            client.api.submitTransaction(signedTxMap)
+                        } else {
+                            nodePool.withRetryTracked { it.api.submitTransaction(signedTxMap) }
+                        }
                     }
                 } catch (he: retrofit2.HttpException) {
                     val errorBody = he.response()?.errorBody()?.string() ?: he.message()
@@ -1825,7 +2176,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     txSuccessData = TxSuccessData(
                         txId = txId,
                         isSimulation = current.isSimulation,
-                        sigmaspaceUrl = "https://sigmaspace.io/tx/$txId",
+                        sigmaspaceUrl = "https://sigmaspace.io/en/transaction/$txId",
                         signedTxJson = signedJson
                     )
                 )
@@ -2150,10 +2501,18 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
                 val txId = try {
                     if (current.isSimulation) {
-                        client.api.checkTransaction(signedTxMap)
+                        if (current.strictSubmitNode) {
+                            client.api.checkTransaction(signedTxMap)
+                        } else {
+                            nodePool.withRetryTracked { it.api.checkTransaction(signedTxMap) }
+                        }
                         signedTxMap["id"] as? String ?: "Simulation"
                     } else {
-                        client.api.submitTransaction(signedTxMap)
+                        if (current.strictSubmitNode) {
+                            client.api.submitTransaction(signedTxMap)
+                        } else {
+                            nodePool.withRetryTracked { it.api.submitTransaction(signedTxMap) }
+                        }
                     }
                 } catch (he: retrofit2.HttpException) {
                     val errorBody = he.response()?.errorBody()?.string() ?: he.message()
@@ -2164,7 +2523,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     txSuccessData = TxSuccessData(
                         txId = txId,
                         isSimulation = current.isSimulation,
-                        sigmaspaceUrl = "https://sigmaspace.io/tx/$txId",
+                        sigmaspaceUrl = "https://sigmaspace.io/en/transaction/$txId",
                         signedTxJson = signedJson
                     )
                 )
@@ -2242,7 +2601,11 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 val client = nodeClient ?: throw Exception("Node client not initialized")
 
                 val txId = try {
-                    client.api.submitTransaction(signedTxMap)
+                    if (current.strictSubmitNode) {
+                        client.api.submitTransaction(signedTxMap)
+                    } else {
+                        nodePool.withRetryTracked { it.api.submitTransaction(signedTxMap) }
+                    }
                 } catch (he: retrofit2.HttpException) {
                     val errorBody = he.response()?.errorBody()?.string() ?: he.message()
                     throw Exception("Node rejected tx: $errorBody")
@@ -2252,7 +2615,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     txSuccessData = TxSuccessData(
                         txId = txId,
                         isSimulation = false,
-                        sigmaspaceUrl = "https://sigmaspace.io/tx/$txId",
+                        sigmaspaceUrl = "https://sigmaspace.io/en/transaction/$txId",
                         signedTxJson = signedJson
                     )
                 )
@@ -2290,28 +2653,30 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     // ─── SYNC & DATA MANAGEMENT ──────────────────────────────────────────────
 
     fun syncTokenList(isFirstLaunch: Boolean = false) {
-        val client = nodeClient ?: return
         _uiState.value = _uiState.value.copy(
             syncProgress = SyncProgress(0, 0, false, emptyList(), isFirstLaunch)
         )
-        
+
         viewModelScope.launch {
             try {
-                tokenRepository.syncTokensWithBlockchain(client) { current, total, newTokens, batchInfo ->
-                    _uiState.value = _uiState.value.copy(
-                        syncProgress = _uiState.value.syncProgress?.copy(
-                            current = current,
-                            total = total,
-                            newTokens = newTokens,
-                            batchInfo = batchInfo
+                // Use a single pool node for the full sync so pagination is consistent
+                readNode { client ->
+                    tokenRepository.syncTokensWithBlockchain(client) { current, total, newTokens, batchInfo ->
+                        _uiState.value = _uiState.value.copy(
+                            syncProgress = _uiState.value.syncProgress?.copy(
+                                current = current,
+                                total = total,
+                                newTokens = newTokens,
+                                batchInfo = batchInfo
+                            )
                         )
-                    )
+                    }
                 }
-                
+
                 // Refresh local token list in state
                 tokenRepository.refreshTokens()
                 updateNodeClient() // This refreshes the 'trader' with new token data
-                
+
                 withContext(kotlinx.coroutines.Dispatchers.Main) {
                     loadPoolMappings(fetchLiquidity = true)
                     _uiState.value = _uiState.value.copy(
@@ -2614,7 +2979,6 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val client = nodeClient ?: return@launch
                 val pageSize = 50
                 val currentLimit = if (loadMore) _uiState.value.historyOffset + pageSize else pageSize
                 val limit = currentLimit
@@ -2636,7 +3000,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     val treeJobs = uncachedAddrs.map { addr ->
                         async {
                             try {
-                                val treeRes = client.api.addressToErgoTree(addr)
+                                val treeRes = readNode { it.api.addressToErgoTree(addr) }
                                 val tree = (treeRes["ergoTree"] as? String) ?: (treeRes["tree"] as? String) ?: ""
                                 if (tree.isNotEmpty()) addr to tree else null
                             } catch (_: Exception) { null }
@@ -2661,9 +3025,9 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                             jobs.add(async {
                                 try {
                                     val reqBody = "\"$ergoTree\"".toRequestBody("application/json".toMediaTypeOrNull())
-                                    val unconfList = client.api.getUnconfirmedTransactionsByErgoTree(
+                                    val unconfList = readNode { it.api.getUnconfirmedTransactionsByErgoTree(
                                         offset = 0, limit = 50, ergoTree = reqBody
-                                    )
+                                    )}
                                     parseNetworkTransactions(unconfList, addressesToFetch, false, ergoTreeToAddr)
                                 } catch (e: Exception) {
                                     Log.e(TAG, "Failed fetching unconfirmed for $address", e)
@@ -2677,9 +3041,9 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     jobs.add(async {
                         try {
                             val reqBody = "\"$address\"".toRequestBody("application/json".toMediaTypeOrNull())
-                            val confResp = client.api.getTransactionsByAddress(
+                            val confResp = readNode { it.api.getTransactionsByAddress(
                                 offset = currentOffset, limit = limit, address = reqBody
-                            )
+                            )}
                             @Suppress("UNCHECKED_CAST")
                             val confList = confResp["items"] as? List<Map<String, Any>> ?: emptyList()
                             if (BuildConfig.DEBUG) Log.d(TAG, "Confirmed for ${address.take(8)}: ${confList.size} txs")
@@ -2741,8 +3105,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         if (address.isEmpty()) return
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val client = nodeClient ?: return@launch
-                val (tokens, nanoerg, _) = client.getMyAssets(address, false)
+                val (tokens, nanoerg, _) = readNode { it.getMyAssets(address, false) }
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(
                         explorerErgBalance = nanoerg.toDouble() / 1_000_000_000.0,
@@ -2758,7 +3121,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                         val hasNoDec = tokenRepository.getTokenDecimals(tid) == 0
                         if (isGeneric || hasNoDec) {
                             try {
-                                client.api.getTokenInfo(tid)?.let { info ->
+                                readNode { it.api.getTokenInfo(tid) }?.let { info ->
                                     tokenRepository.saveTokenInfo(tid, info)
                                 }
                             } catch (_: Exception) {}
@@ -2784,7 +3147,6 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val client = nodeClient ?: return@launch
                 val currentOffset = if (loadMore) _uiState.value.explorerHistoryOffset else 0
                 val limit = 50
                 val addressSet = setOf(address)
@@ -2796,7 +3158,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     ergoTreeToAddr[cached] = address
                 } else {
                     try {
-                        val treeRes = client.api.addressToErgoTree(address)
+                        val treeRes = readNode { it.api.addressToErgoTree(address) }
                         val tree = (treeRes["ergoTree"] as? String) ?: (treeRes["tree"] as? String) ?: ""
                         if (tree.isNotEmpty()) {
                             ergoTreeToAddr[tree] = address
@@ -2813,9 +3175,9 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     if (ergoTree.isNotEmpty()) {
                         try {
                             val reqBody = "\"$ergoTree\"".toRequestBody("application/json".toMediaTypeOrNull())
-                            val unconfList = client.api.getUnconfirmedTransactionsByErgoTree(
+                            val unconfList = readNode { it.api.getUnconfirmedTransactionsByErgoTree(
                                 offset = 0, limit = 50, ergoTree = reqBody
-                            )
+                            )}
                             newTrades.addAll(parseNetworkTransactions(unconfList, addressSet, false, ergoTreeToAddr))
                         } catch (_: Exception) {}
                     }
@@ -2824,9 +3186,9 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 // Confirmed
                 try {
                     val reqBody = "\"$address\"".toRequestBody("application/json".toMediaTypeOrNull())
-                    val confResp = client.api.getTransactionsByAddress(
+                    val confResp = readNode { it.api.getTransactionsByAddress(
                         offset = currentOffset, limit = limit, address = reqBody
-                    )
+                    )}
                     @Suppress("UNCHECKED_CAST")
                     val confList = confResp["items"] as? List<Map<String, Any>> ?: emptyList()
                     newTrades.addAll(parseNetworkTransactions(confList, addressSet, true, ergoTreeToAddr))

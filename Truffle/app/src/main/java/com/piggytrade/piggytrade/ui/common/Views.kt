@@ -9,6 +9,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -26,9 +28,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.ripple.rememberRipple
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.launch
 import coil.request.ImageRequest
 
 @Composable
@@ -309,3 +321,446 @@ fun TokenImage(
         )
     }
 }
+
+/**
+ * Global token info popup — shows token metadata and minting info.
+ * Can be triggered from anywhere a token ID is displayed.
+ */
+@Composable
+fun TokenInfoPopup(tokenId: String, viewModel: SwapViewModel, onDismiss: () -> Unit, onAddressClick: ((String) -> Unit)? = null) {
+    var mintInfo by remember { mutableStateOf<TokenMintInfo?>(null) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+    val clipboardManager = LocalClipboardManager.current
+    var showExplorePopup by remember { mutableStateOf(false) }
+    var showTopHolders by remember { mutableStateOf(false) }
+
+    LaunchedEffect(tokenId) {
+        isLoading = true
+        errorMsg = null
+        try {
+            mintInfo = viewModel.fetchTokenMintInfo(tokenId)
+        } catch (e: Exception) {
+            errorMsg = e.message ?: "Failed to load token info"
+        }
+        isLoading = false
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        containerColor = ColorCard,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth(0.95f),
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TokenImage(tokenId = tokenId, modifier = Modifier.size(32.dp))
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = mintInfo?.name ?: viewModel.getTokenName(tokenId),
+                    color = Color.White,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                if (isLoading) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = ColorAccent, modifier = Modifier.size(28.dp))
+                    }
+                } else if (errorMsg != null) {
+                    Text(errorMsg!!, color = ColorDanger, fontSize = 13.sp)
+                } else if (mintInfo != null) {
+                    val info = mintInfo!!
+
+                    // Description
+                    if (info.description.isNotEmpty()) {
+                        Text(info.description, color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp, lineHeight = 18.sp)
+                        Spacer(Modifier.height(12.dp))
+                    }
+
+                    // Token ID
+                    TokenInfoRow("Token ID") {
+                        Text(
+                            "${tokenId.take(10)}...${tokenId.takeLast(10)}",
+                            color = ColorAccent,
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.clickable {
+                                clipboardManager.setText(AnnotatedString(tokenId))
+                            }
+                        )
+                    }
+
+                    // Total Supply
+                    val formattedEmission = if (info.decimals > 0) {
+                        val divisor = Math.pow(10.0, info.decimals.toDouble())
+                        String.format("%,.${info.decimals}f", info.emissionAmount.toDouble() / divisor)
+                    } else {
+                        String.format("%,d", info.emissionAmount)
+                    }
+                    TokenInfoRow("Total Supply") {
+                        Text(formattedEmission, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    // Decimals
+                    TokenInfoRow("Decimals") {
+                        Text("${info.decimals}", color = Color.White, fontSize = 13.sp)
+                    }
+
+                    Spacer(Modifier.height(8.dp))
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+                    Spacer(Modifier.height(8.dp))
+
+                    Text("Minting Info", color = ColorAccent, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Spacer(Modifier.height(8.dp))
+
+                    // Minting Address
+                    TokenInfoRow("Address") {
+                        val truncAddr = if (info.mintAddress.length > 20)
+                            "${info.mintAddress.take(10)}...${info.mintAddress.takeLast(8)}"
+                        else info.mintAddress
+                        Text(
+                            truncAddr,
+                            color = ColorAccent,
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.clickable {
+                                if (onAddressClick != null) {
+                                    showExplorePopup = true
+                                } else {
+                                    clipboardManager.setText(AnnotatedString(info.mintAddress))
+                                }
+                            }
+                        )
+                    }
+
+                    // Minting Tx
+                    if (info.mintTxId.isNotEmpty()) {
+                        TokenInfoRow("Transaction") {
+                            Text(
+                                "${info.mintTxId.take(10)}...${info.mintTxId.takeLast(8)}",
+                                color = ColorAccent,
+                                fontSize = 12.sp,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.clickable {
+                                    clipboardManager.setText(AnnotatedString(info.mintTxId))
+                                }
+                            )
+                        }
+                    }
+
+                    // Block Height
+                    info.mintBlockHeight?.let { height ->
+                        TokenInfoRow("Block") {
+                            Text(String.format("%,d", height), color = Color.White, fontSize = 13.sp)
+                        }
+                    }
+
+                    // Minting Timestamp
+                    info.mintTimestamp?.let { ts ->
+                        val sdf = java.text.SimpleDateFormat("d MMM yyyy HH:mm", java.util.Locale.US)
+                        TokenInfoRow("Date") {
+                            Text(sdf.format(java.util.Date(ts)), color = Color.White, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Row {
+                if (!isLoading && mintInfo != null) {
+                    TextButton(onClick = { showTopHolders = true }) {
+                        Text("Top Holders", color = ColorBlue, fontWeight = FontWeight.Bold)
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text("Close", color = ColorAccent, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    )
+
+    // Explore Wallet confirmation popup (same pattern as CollapsibleBoxRow)
+    if (showExplorePopup && onAddressClick != null && mintInfo != null) {
+        AlertDialog(
+            onDismissRequest = { showExplorePopup = false },
+            containerColor = ColorCard,
+            title = { Text("Explore Wallet", color = Color.White, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("View balance & transactions for:", color = ColorTextDim, fontSize = 13.sp)
+                    Spacer(Modifier.height(6.dp))
+                    val addr = mintInfo!!.mintAddress
+                    val truncAddr = if (addr.length > 20) "${addr.take(10)}...${addr.takeLast(8)}" else addr
+                    Text(
+                        truncAddr,
+                        color = ColorAccent,
+                        fontSize = 13.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showExplorePopup = false
+                    onDismiss()
+                    onAddressClick(mintInfo!!.mintAddress)
+                }) {
+                    Text("Explore", color = ColorAccent, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExplorePopup = false }) {
+                    Text("Cancel", color = ColorTextDim)
+                }
+            }
+        )
+    }
+
+    // Top Holders dialog
+    if (showTopHolders && mintInfo != null) {
+        TopHoldersDialog(
+            tokenId = tokenId,
+            tokenName = mintInfo!!.name,
+            decimals = mintInfo!!.decimals,
+            emissionAmount = mintInfo!!.emissionAmount,
+            viewModel = viewModel,
+            onDismiss = { showTopHolders = false },
+            onAddressClick = onAddressClick
+        )
+    }
+}
+
+@Composable
+private fun TokenInfoRow(label: String, content: @Composable () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = ColorTextDim, fontSize = 12.sp, modifier = Modifier.weight(0.4f))
+        Box(modifier = Modifier.weight(0.6f), contentAlignment = Alignment.CenterEnd) {
+            content()
+        }
+    }
+}
+
+@Composable
+fun TopHoldersDialog(
+    tokenId: String,
+    tokenName: String,
+    decimals: Int,
+    emissionAmount: Long,
+    viewModel: SwapViewModel,
+    onDismiss: () -> Unit,
+    onAddressClick: ((String) -> Unit)? = null
+) {
+    var holders by remember { mutableStateOf<List<Pair<String, Long>>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+    var fetchedBoxes by remember { mutableStateOf(0) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
+    var showExploreAddr by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(tokenId) {
+        isLoading = true
+        errorMsg = null
+        try {
+            holders = viewModel.fetchTopHolders(
+                tokenId = tokenId,
+                decimals = decimals,
+                onProgress = { fetched -> fetchedBoxes = fetched }
+            ).holders
+        } catch (e: Exception) {
+            errorMsg = e.message ?: "Failed to fetch holders"
+        }
+        isLoading = false
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!isLoading) onDismiss() },
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        containerColor = ColorCard,
+        shape = RoundedCornerShape(20.dp),
+        modifier = Modifier.fillMaxWidth(0.95f),
+        title = {
+            Text("Top Holders \u2014 $tokenName", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 450.dp)
+            ) {
+                if (isLoading) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CircularProgressIndicator(color = ColorAccent, modifier = Modifier.size(32.dp))
+                        Spacer(Modifier.height(10.dp))
+                        Text("Scanning unspent boxes...", color = Color.White, fontSize = 13.sp)
+                        Text(
+                            "$fetchedBoxes boxes fetched",
+                            color = ColorAccent,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "This may take a while for tokens\nwith many holders.",
+                            color = ColorTextDim,
+                            fontSize = 11.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                } else if (errorMsg != null) {
+                    Text(errorMsg!!, color = ColorDanger, fontSize = 13.sp)
+                } else {
+                    // Header row
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("#", color = ColorTextDim, fontSize = 10.sp, modifier = Modifier.width(28.dp))
+                        Text("Address", color = ColorTextDim, fontSize = 10.sp, modifier = Modifier.weight(1f))
+                        Text("Balance", color = ColorTextDim, fontSize = 10.sp, textAlign = TextAlign.End, modifier = Modifier.width(125.dp))
+                        Text("%", color = ColorTextDim, fontSize = 10.sp, textAlign = TextAlign.End, modifier = Modifier.width(50.dp))
+                    }
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
+
+                    // Scrollable list
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().weight(1f)
+                    ) {
+                        itemsIndexed(holders) { index, (address, amount) ->
+                            val formattedBalance = if (decimals > 0) {
+                                val divisor = Math.pow(10.0, decimals.toDouble())
+                                String.format("%,.${minOf(decimals, 4)}f", amount.toDouble() / divisor)
+                            } else {
+                                String.format("%,d", amount)
+                            }
+                            val truncAddr = if (address.length > 20)
+                                "${address.take(8)}...${address.takeLast(6)}"
+                            else address
+
+                            val pct = if (emissionAmount > 0)
+                                String.format("%.1f%%", amount.toDouble() / emissionAmount.toDouble() * 100.0)
+                            else ""
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp)
+                                    .then(
+                                        if (onAddressClick != null)
+                                            Modifier.clickable { showExploreAddr = address }
+                                        else Modifier
+                                    ),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "${index + 1}",
+                                    color = ColorTextDim,
+                                    fontSize = 11.sp,
+                                    modifier = Modifier.width(28.dp)
+                                )
+                                Text(
+                                    truncAddr,
+                                    color = if (onAddressClick != null) ColorAccent else Color.White,
+                                    fontSize = 11.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    formattedBalance,
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.End,
+                                    modifier = Modifier.width(125.dp)
+                                )
+                                if (pct.isNotEmpty()) {
+                                    Text(
+                                        pct,
+                                        color = Color.White,
+                                        fontSize = 10.sp,
+                                        textAlign = TextAlign.End,
+                                        modifier = Modifier.width(50.dp)
+                                    )
+                                }
+                            }
+                            if (index < holders.size - 1) {
+                                HorizontalDivider(color = Color.White.copy(alpha = 0.05f))
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "${holders.size} addresses \u2022 $fetchedBoxes boxes scanned",
+                        color = ColorTextDim,
+                        fontSize = 10.sp
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close", color = ColorAccent, fontWeight = FontWeight.Bold)
+            }
+        }
+    )
+
+    // Explore Wallet confirmation for top holder address
+    showExploreAddr?.let { addr ->
+        if (onAddressClick != null) {
+            AlertDialog(
+                onDismissRequest = { showExploreAddr = null },
+                containerColor = ColorCard,
+                title = { Text("Explore Wallet", color = Color.White, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column {
+                        Text("View balance & transactions for:", color = ColorTextDim, fontSize = 13.sp)
+                        Spacer(Modifier.height(6.dp))
+                        val truncAddr = if (addr.length > 20) "${addr.take(10)}...${addr.takeLast(8)}" else addr
+                        Text(
+                            truncAddr,
+                            color = ColorAccent,
+                            fontSize = 13.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        showExploreAddr = null
+                        onDismiss()
+                        onAddressClick(addr)
+                    }) {
+                        Text("Explore", color = ColorAccent, fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showExploreAddr = null }) {
+                        Text("Cancel", color = ColorTextDim)
+                    }
+                }
+            )
+        }
+    }
+}
+

@@ -456,7 +456,7 @@ fun WalletInfoContent(
                     modifier = Modifier.fillMaxWidth().weight(1f)
                 ) {
                     items(sortedTokens) { (tokenId, amount) ->
-                        TokenBalanceItem(tokenId, amount, viewModel, marketViewModel)
+                        TokenBalanceItem(tokenId, amount, viewModel, marketViewModel, onAddressClick = onAddressClick)
                     }
                 }
             }
@@ -592,12 +592,22 @@ fun NetworkTradeHistoryItemView(trade: NetworkTransaction, viewModel: SwapViewMo
                 }
 
                 // TOKEN CHANGES
+                var tokenInfoId by remember { mutableStateOf<String?>(null) }
                 trade.netTokenChanges.forEach { (tokenId, netAmt) ->
                     val symbol = if (netAmt > 0) "+" else "-"
                     val name = viewModel.getTokenName(tokenId)
                     val formattedAmt = viewModel.formatBalance(tokenId, Math.abs(netAmt))
                     val color = if (netAmt > 0) Color.Green else ColorSent
-                    Text("$symbol$formattedAmt $name", color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "$symbol$formattedAmt $name",
+                        color = color,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = if (tokenId.length > 5) Modifier.clickable { tokenInfoId = tokenId } else Modifier
+                    )
+                }
+                tokenInfoId?.let { tid ->
+                    TokenInfoPopup(tokenId = tid, viewModel = viewModel, onDismiss = { tokenInfoId = null }, onAddressClick = onAddressClick)
                 }
 
                 if (trade.netErgChange == 0L && trade.netTokenChanges.isEmpty()) {
@@ -739,10 +749,12 @@ fun NetworkTradeHistoryItemView(trade: NetworkTransaction, viewModel: SwapViewMo
 }
 
 @Composable
-fun TokenBalanceItem(tokenId: String, amount: Long, viewModel: SwapViewModel, marketViewModel: MarketViewModel? = null) {
+fun TokenBalanceItem(tokenId: String, amount: Long, viewModel: SwapViewModel, marketViewModel: MarketViewModel? = null, onAddressClick: ((String) -> Unit)? = null) {
     val usdValue = marketViewModel?.getTokenUsdValue(tokenId)
+    var showTokenInfo by remember { mutableStateOf(false) }
     Card(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp)
+            .clickable { if (tokenId.length > 5) showTokenInfo = true },
         colors = CardDefaults.cardColors(containerColor = ColorInputBg),
         shape = RoundedCornerShape(10.dp)
     ) {
@@ -778,6 +790,9 @@ fun TokenBalanceItem(tokenId: String, amount: Long, viewModel: SwapViewModel, ma
                 }
             }
         }
+    }
+    if (showTokenInfo && tokenId.length > 5) {
+        TokenInfoPopup(tokenId = tokenId, viewModel = viewModel, onDismiss = { showTokenInfo = false }, onAddressClick = onAddressClick)
     }
 }
 
@@ -824,11 +839,21 @@ fun CollapsibleBoxRow(box: TxBox, viewModel: SwapViewModel, myAddresses: Set<Str
         Text("${SwapViewModel.formatErg(box.value.toDouble() / 1_000_000_000.0)} ERG", color = Color.White, fontSize = 12.sp)
 
         val assetsToShow = if (box.assets.size >= threshold && !isExpanded) box.assets.take(threshold - 1) else box.assets
+        // Token info popup state for CollapsibleBoxRow
+        var tokenInfoId by remember { mutableStateOf<String?>(null) }
         assetsToShow.forEach { map ->
             val tId = map["tokenId"] as? String ?: ""
             val amt = (map["amount"] as? Number)?.toLong() ?: 0L
             val tName = viewModel.getTokenName(tId)
-            Text("${viewModel.formatBalance(tId, amt)} $tName", color = Color.White, fontSize = 12.sp)
+            Text(
+                "${viewModel.formatBalance(tId, amt)} $tName",
+                color = Color.White,
+                fontSize = 12.sp,
+                modifier = if (tId.length > 5) Modifier.clickable { tokenInfoId = tId } else Modifier
+            )
+        }
+        tokenInfoId?.let { tid ->
+            TokenInfoPopup(tokenId = tid, viewModel = viewModel, onDismiss = { tokenInfoId = null }, onAddressClick = onAddressClick)
         }
 
         if (box.assets.size >= threshold) {

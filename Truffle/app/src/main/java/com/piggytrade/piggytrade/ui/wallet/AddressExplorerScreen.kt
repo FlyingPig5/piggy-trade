@@ -363,7 +363,9 @@ fun AddressExplorerScreen(
                         modifier = Modifier.fillMaxWidth().weight(1f)
                     ) {
                         items(sortedTokens) { (tokenId, amount) ->
-                            TokenBalanceItem(tokenId, amount, viewModel)
+                            TokenBalanceItem(tokenId, amount, viewModel, onAddressClick = { addr ->
+                                explorePopupAddress = addr
+                            })
                         }
                     }
                 }

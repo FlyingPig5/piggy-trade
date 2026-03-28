@@ -126,9 +126,9 @@ class NodeClient(val nodeUrl: String) {
         }
         val okHttpClient = OkHttpClient.Builder()
             .addInterceptor(logging)
-            .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(15, TimeUnit.SECONDS)
+            .connectTimeout(3, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(10, TimeUnit.SECONDS)
             .build()
             
         api = Retrofit.Builder()

@@ -279,7 +279,6 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
 
     @Suppress("UNCHECKED_CAST")
     private suspend fun fetchPoolTrades(tokenName: String) {
-        val client = nodeClient ?: nodePool.next()
         _uiState.value = _uiState.value.copy(isLoadingPoolTrades = true, poolTrades = emptyList(), poolVolume24h = 0.0, poolVolume7d = 0.0)
         try {
             val poolNft = tokenRepository.getPoolNftForToken(tokenName) ?: return
@@ -287,9 +286,13 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
             val tokenDiv = Math.pow(10.0, decimals.toDouble())
             val tokenId = tokenRepository.getTokenIdForName(tokenName) ?: ""
             val nowMs = System.currentTimeMillis()
-            val currentHeight = try { client.getHeight() } catch (e: Exception) { 0 }
-            val resp = client.api.getBoxesByTokenId(poolNft, 0, 16)
-            val boxes = resp["items"] as? List<Map<String, Any>> ?: return
+            
+            val (currentHeight, boxes) = nodePool.withRetry { poolClient ->
+                val h = try { poolClient.getHeight() } catch (e: Exception) { 0 }
+                val resp = poolClient.api.getBoxesByTokenId(poolNft, 0, 16)
+                val b = resp["items"] as? List<Map<String, Any>> ?: emptyList()
+                Pair(h, b)
+            }
             if (boxes.size < 2) return
 
             data class RawTrade(val isBuy: Boolean, val erg: Double, val tokens: Double, val timestamp: Long, val txId: String, val priceImpact: Double?)
@@ -336,7 +339,7 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
                     async {
                         try {
                             if (raw.txId.isEmpty()) return@async PoolTrade(raw.isBuy, raw.erg, raw.tokens, raw.timestamp, raw.txId, priceImpact = raw.priceImpact)
-                            val tx = client.api.getTransactionById(raw.txId)
+                            val tx = nodePool.withRetry { poolClient -> poolClient.api.getTransactionById(raw.txId) }
                                 ?: return@async PoolTrade(raw.isBuy, raw.erg, raw.tokens, raw.timestamp, raw.txId, priceImpact = raw.priceImpact)
                             val realTs = (tx["timestamp"] as? Number)?.toLong() ?: raw.timestamp
                             @Suppress("UNCHECKED_CAST")

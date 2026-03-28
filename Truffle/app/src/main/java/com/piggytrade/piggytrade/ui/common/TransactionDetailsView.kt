@@ -152,6 +152,7 @@ private fun TxDetailBoxCard(
                 "Σ ${String.format("%.9f", box.valueNano / 1_000_000_000.0).trimEnd('0').trimEnd('.')} ERG",
                 color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold
             )
+            var tokenInfoId by remember { mutableStateOf<String?>(null) }
             box.tokens.forEach { tok ->
                 val name = viewModel.getTokenName(tok.tokenId).ifEmpty { "${tok.tokenId.take(8)}..." }
                 val dec = viewModel.getTokenDecimals(tok.tokenId)
@@ -161,7 +162,15 @@ private fun TxDetailBoxCard(
                 } else {
                     tok.amount.toString()
                 }
-                Text("+ $displayAmt $name", color = ColorAccent, fontSize = 11.sp)
+                Text(
+                    "+ $displayAmt $name",
+                    color = ColorAccent,
+                    fontSize = 11.sp,
+                    modifier = if (tok.tokenId.length > 5) Modifier.clickable { tokenInfoId = tok.tokenId } else Modifier
+                )
+            }
+            tokenInfoId?.let { tid ->
+                TokenInfoPopup(tokenId = tid, viewModel = viewModel, onDismiss = { tokenInfoId = null })
             }
         }
     }

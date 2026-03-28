@@ -111,7 +111,8 @@ fun MainScreen(
                 // Constant App Header (Logo + Settings Cog)
                 AppHeader(
                     isLoading = uiState.isLoadingQuote || uiState.isLoadingHistory,
-                    onNavigateToSettings = onNavigateToSettings
+                    onNavigateToSettings = onNavigateToSettings,
+                    nodeStatus = uiState.nodeStatus
                 )
 
                 Spacer(modifier = Modifier.height(4.dp))

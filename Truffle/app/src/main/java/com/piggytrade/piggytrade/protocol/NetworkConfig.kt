@@ -2,7 +2,7 @@ package com.piggytrade.piggytrade.protocol
 
 object NetworkConfig {
     val NODES = mapOf(
-        "Public1"  to mapOf("url" to "https://ergo-node.eutxo.de"),
+        "Public1"  to mapOf("url" to "https://213.239.193.208:9053"),
         "Public2"  to mapOf("url" to "https://ergo-node-1.eutxo.de"),
         "Public3"  to mapOf("url" to "https://ergo-node-2.eutxo.de"),
         "Public4"  to mapOf("url" to "https://ergo-node-3.eutxo.de"),
@@ -20,6 +20,10 @@ object NetworkConfig {
         "Public16" to mapOf("url" to "https://ergo.getblok.io"),
         "Public17" to mapOf("url" to "https://80.209.232.82:9053"),
         "Public18" to mapOf("url" to "https://bp.lakecardano.com:9053"),
+        "Public19"  to mapOf("url" to "https://ergo-node.eutxo.de"),
+        "Public20"  to mapOf("url" to "https://51.81.84.167:9053"),
+        "Public21"  to mapOf("url" to "http://91.32.96.171:9053"),
+        "Public22"  to mapOf("url" to "http://80.209.232.82:9053"),
     )
 
     const val SPECTRUM_ADDRESS = "5vSUZRZbdVbnk4sJWjg2uhL94VZWRg4iatK9VgMChufzUgdihgvhR8yWSUEJKszzV7Vmi6K8hCyKTNhUaiP8p5ko6YEU9yfHpjVuXdQ4i5p4cRCzch6ZiqWrNukYjv7Vs5jvBwqg5hcEJ8u1eerr537YLWUoxxi1M4vQxuaCihzPKMt8NDXP4WcbN6mfNxxLZeGBvsHVvVmina5THaECosCWozKJFBnscjhpr3AJsdaL8evXAvPfEjGhVMoTKXAb2ZGGRmR8g1eZshaHmgTg2imSiaoXU5eiF3HvBnDuawaCtt674ikZ3oZdekqswcVPGMwqqUKVsGY4QuFeQoGwRkMqEYTdV2UDMMsfrjrBYQYKUBFMwsQGMNBL1VoY78aotXzdeqJCBVKbQdD3ZZWvukhSe4xrz8tcF3PoxpysDLt89boMqZJtGEHTV9UBTBEac6sDyQP693qT3nKaErN8TCXrJBUmHPqKozAg9bwxTqMYkpmb9iVKLSoJxG7MjAj72SRbcqQfNCVTztSwN3cRxSrVtz4p87jNFbVtFzhPg7UqDwNFTaasySCqM"

@@ -27,6 +27,19 @@ class MainActivity : FragmentActivity() {
 
             // Startup: trigger oracle price sync via MarketViewModel
             LaunchedEffect(Unit) { marketViewModel.syncOraclePrices() }
+            
+            // Re-probe nodes on app foreground to catch recovered nodes
+            val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+            DisposableEffect(lifecycleOwner) {
+                val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                    if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                        viewModel.reprobeNodes()
+                    }
+                }
+                lifecycleOwner.lifecycle.addObserver(observer)
+                onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+            }
+
             val uiState by viewModel.uiState.collectAsState()
             var currentScreen by remember { mutableStateOf("main") }
             var selectedWalletForInfo by remember { mutableStateOf("") }
@@ -245,6 +258,10 @@ class MainActivity : FragmentActivity() {
                         )
                         "add_node" -> AddNodeScreen(
                             onBack = { currentScreen = "settings" },
+                            onAddNode = { name, url ->
+                                viewModel.addNode(name, url)
+                                currentScreen = "settings"
+                            },
                             allowHttpNodes = uiState.allowHttpNodes
                         )
                         "add_wallet" -> AddWalletScreen(

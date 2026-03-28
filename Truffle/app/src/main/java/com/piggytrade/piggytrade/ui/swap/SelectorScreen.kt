@@ -121,6 +121,7 @@ fun <T> SelectorScreen(
                         val (nameColor, labelText) = when (status) {
                             0 -> Color.White to "" // Verified
                             1 -> Color.White to " (user added)" // User added
+                            3 -> Color(0xFFE57373) to " (offline/dead)" // Dead node
                             else -> ColorOrange to " (unverified)" // Unverified
                         }
 
@@ -135,7 +136,7 @@ fun <T> SelectorScreen(
                                 if (labelText.isNotEmpty()) {
                                     Text(
                                         text = labelText,
-                                        color = if (status == 1) ColorTextDim else ColorOrange,
+                                        color = if (status == 1) ColorTextDim else if (status == 3) Color(0xFFE57373) else ColorOrange,
                                         fontSize = 12.sp,
                                         fontWeight = FontWeight.Normal
                                     )

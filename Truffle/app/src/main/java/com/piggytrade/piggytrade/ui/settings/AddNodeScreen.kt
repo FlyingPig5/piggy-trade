@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.sp
 @Composable
 fun AddNodeScreen(
     onBack: () -> Unit,
+    onAddNode: (name: String, url: String) -> Unit,
     allowHttpNodes: Boolean = false
 ) {
     var nodeUrl by remember { mutableStateOf("") }
@@ -96,7 +97,7 @@ fun AddNodeScreen(
             )
 
             Button(
-                onClick = { /* TODO add node and back */ onBack() },
+                onClick = { onAddNode(nodeName, nodeUrl) },
                 enabled = nodeUrl.isNotEmpty() && !httpBlocked,
                 modifier = Modifier.fillMaxWidth().height(55.dp),
                 shape = RoundedCornerShape(12.dp),

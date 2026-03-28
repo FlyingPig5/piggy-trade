@@ -42,118 +42,114 @@ class Trader(
     }
 
     suspend fun getQuote(poolKey: String, amount: Double, orderType: String, poolType: String = "erg", checkMempool: Boolean = true): Pair<String, Double> {
-        return try {
-            val cfg = getPoolConfig(poolKey)
-            val tokenId = cfg["id"] as? String ?: ""
-            val tokenPid = cfg["pid"] as? String ?: ""
-            
-            val cacheKey = "$tokenPid-$checkMempool"
-            val cached = poolBoxCache[cacheKey]
-            val now = System.currentTimeMillis()
-            
-            val poolBox = if (cached != null && (now - cached.first) < CACHE_DURATION_MS) {
-                cached.second
-            } else {
-                val box = client.getPoolBox(tokenPid, checkMempool) ?: return Pair("Error: Pool not found", 0.0)
-                poolBoxCache[cacheKey] = Pair(now, box)
-                box
-            }
-            
-            val poolNanoerg = (poolBox["value"] as? Number)?.toLong() ?: 0L
-            val amountDec = BigDecimal.valueOf(amount)
-            val fee = (cfg["fee"] as? Number)?.toDouble() ?: 0.003
-            val decimals = (cfg["dec"] as? Number)?.toInt() ?: 0
+        val cfg = getPoolConfig(poolKey)
+        val tokenId = cfg["id"] as? String ?: ""
+        val tokenPid = cfg["pid"] as? String ?: ""
+        
+        val cacheKey = "$tokenPid-$checkMempool"
+        val cached = poolBoxCache[cacheKey]
+        val now = System.currentTimeMillis()
+        
+        val poolBox = if (cached != null && (now - cached.first) < CACHE_DURATION_MS) {
+            cached.second
+        } else {
+            val box = client.getPoolBox(tokenPid, checkMempool) ?: return Pair("Error: Pool not found", 0.0)
+            poolBoxCache[cacheKey] = Pair(now, box)
+            box
+        }
+        
+        val poolNanoerg = (poolBox["value"] as? Number)?.toLong() ?: 0L
+        val amountDec = BigDecimal.valueOf(amount)
+        val fee = (cfg["fee"] as? Number)?.toDouble() ?: 0.003
+        val decimals = (cfg["dec"] as? Number)?.toInt() ?: 0
 
-            return if (poolType == "erg") {
-                val poolTokenBal = getBal(poolBox, tokenId)
-                if (orderType.equals("buy", ignoreCase = true)) {
-                    val nergToSend = amountDec.multiply(BigDecimal.valueOf(1000000000))
-                    val feeMult = BigDecimal.ONE.subtract(BigDecimal.valueOf(fee))
-                    val ergAmm = nergToSend.multiply(feeMult).toLong()
-                    val (delta, _, _) = Amm.buyToken(ergAmm, poolNanoerg, poolTokenBal)
-                    val readableOut = delta.divide(BigDecimal.TEN.pow(decimals), decimals, RoundingMode.HALF_UP)
-                    
-                    if (poolTokenBal == 0L) return Pair("Pool has no tokens", 0.0)
-                    
-                    val spotPrice = BigDecimal.valueOf(poolNanoerg).divide(BigDecimal.valueOf(poolTokenBal), 10, RoundingMode.HALF_UP)
-                    
-                    if (readableOut.compareTo(BigDecimal.ZERO) == 0) return Pair("Amount too small", 0.0)
-                    
-                    // Execution price (pure slippage, excluding swap fee)
-                    val executionPrice = BigDecimal.valueOf(ergAmm).divide(delta, 10, RoundingMode.HALF_UP)
-                    val priceImpact = if (spotPrice.compareTo(BigDecimal.ZERO) == 0) 0.0 
-                    else executionPrice.subtract(spotPrice).divide(spotPrice, 10, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).toDouble()
-                    
-                    Pair(formatReadable(readableOut, decimals), priceImpact)
-                } else {
-                    val tokenAmt = amountDec.multiply(BigDecimal.TEN.pow(decimals)).toLong()
-                    val (ergOut, _, _, _) = Amm.sellToken(tokenAmt, poolNanoerg, poolTokenBal)
-                    val feeMult = BigDecimal.ONE.subtract(BigDecimal.valueOf(fee))
-                    val ergReceived = BigDecimal.valueOf(ergOut).multiply(feeMult)
-                    
-                    val readableOut = ergReceived.divide(BigDecimal.valueOf(1000000000), 9, RoundingMode.HALF_UP)
-                    
-                    if (poolNanoerg == 0L) return Pair("Pool has no ERG", 0.0)
-                    
-                    val spotPrice = BigDecimal.valueOf(poolTokenBal).divide(BigDecimal.valueOf(poolNanoerg), 10, RoundingMode.HALF_UP)
-                    
-                    if (ergReceived.compareTo(BigDecimal.ZERO) == 0) return Pair("Amount too small", 0.0)
-                    
-                    // Execution price (pure slippage, excluding swap fee)
-                    val executionPrice = BigDecimal.valueOf(tokenAmt).divide(BigDecimal.valueOf(ergOut), 10, RoundingMode.HALF_UP)
-                    val priceImpact = if (spotPrice.compareTo(BigDecimal.ZERO) == 0) 0.0
-                    else executionPrice.subtract(spotPrice).divide(spotPrice, 10, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).toDouble()
-                    
-                    Pair(formatReadable(readableOut, 9), priceImpact)
-                }
-            } else if (poolType == "token") {
-                val tidX = cfg["id_in"] as? String ?: ""
-                val tidY = cfg["id_out"] as? String ?: ""
-                val decX = (cfg["dec_in"] as? Number)?.toInt() ?: 0
-                val decY = (cfg["dec_out"] as? Number)?.toInt() ?: 0
-                val poolBalX = getBal(poolBox, tidX)
-                val poolBalY = getBal(poolBox, tidY)
-
-                if (orderType.equals("sell", ignoreCase = true)) {
-                    val amtInX = amountDec.multiply(BigDecimal.TEN.pow(decX))
-                    val deltaY = Amm.tokenForToken(amtInX, BigDecimal.valueOf(poolBalX), BigDecimal.valueOf(poolBalY), BigDecimal.valueOf(fee))
-                    val readableOut = deltaY.divide(BigDecimal.TEN.pow(decY), decY, RoundingMode.HALF_UP)
-                    
-                    if (poolBalY == 0L) return Pair("Pool has no $tidY", 0.0)
-                    val spotPrice = BigDecimal.valueOf(poolBalX).divide(BigDecimal.valueOf(poolBalY), 10, RoundingMode.HALF_UP)
-                    
-                    if (deltaY.compareTo(BigDecimal.ZERO) == 0) return Pair("Amount too small", 0.0)
-                    
-                    // Execution price (pure slippage, excluding swap fee)
-                    val effectiveInX = amtInX.multiply(BigDecimal.ONE.subtract(BigDecimal.valueOf(fee)))
-                    val executionPrice = effectiveInX.divide(deltaY, 10, RoundingMode.HALF_UP)
-                    val priceImpact = if (spotPrice.compareTo(BigDecimal.ZERO) == 0) 0.0
-                    else executionPrice.subtract(spotPrice).divide(spotPrice, 10, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).toDouble()
-                    
-                    Pair(formatReadable(readableOut, decY), priceImpact)
-                } else {
-                    val amtInY = amountDec.multiply(BigDecimal.TEN.pow(decY))
-                    val deltaX = Amm.tokenForToken(amtInY, BigDecimal.valueOf(poolBalY), BigDecimal.valueOf(poolBalX), BigDecimal.valueOf(fee))
-                    val readableOut = deltaX.divide(BigDecimal.TEN.pow(decX), decX, RoundingMode.HALF_UP)
-                    
-                    if (poolBalX == 0L) return Pair("Pool has no $tidX", 0.0)
-                    val spotPrice = BigDecimal.valueOf(poolBalY).divide(BigDecimal.valueOf(poolBalX), 10, RoundingMode.HALF_UP)
-                    
-                    if (deltaX.compareTo(BigDecimal.ZERO) == 0) return Pair("Amount too small", 0.0)
-                    
-                    // Execution price (pure slippage, excluding swap fee)
-                    val effectiveInY = amtInY.multiply(BigDecimal.ONE.subtract(BigDecimal.valueOf(fee)))
-                    val executionPrice = effectiveInY.divide(deltaX, 10, RoundingMode.HALF_UP)
-                    val priceImpact = if (spotPrice.compareTo(BigDecimal.ZERO) == 0) 0.0
-                    else executionPrice.subtract(spotPrice).divide(spotPrice, 10, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).toDouble()
-                    
-                    Pair(formatReadable(readableOut, decX), priceImpact)
-                }
+        return if (poolType == "erg") {
+            val poolTokenBal = getBal(poolBox, tokenId)
+            if (orderType.equals("buy", ignoreCase = true)) {
+                val nergToSend = amountDec.multiply(BigDecimal.valueOf(1000000000))
+                val feeMult = BigDecimal.ONE.subtract(BigDecimal.valueOf(fee))
+                val ergAmm = nergToSend.multiply(feeMult).toLong()
+                val (delta, _, _) = Amm.buyToken(ergAmm, poolNanoerg, poolTokenBal)
+                val readableOut = delta.divide(BigDecimal.TEN.pow(decimals), decimals, RoundingMode.HALF_UP)
+                
+                if (poolTokenBal == 0L) return Pair("Pool has no tokens", 0.0)
+                
+                val spotPrice = BigDecimal.valueOf(poolNanoerg).divide(BigDecimal.valueOf(poolTokenBal), 10, RoundingMode.HALF_UP)
+                
+                if (readableOut.compareTo(BigDecimal.ZERO) == 0) return Pair("Amount too small", 0.0)
+                
+                // Execution price (pure slippage, excluding swap fee)
+                val executionPrice = BigDecimal.valueOf(ergAmm).divide(delta, 10, RoundingMode.HALF_UP)
+                val priceImpact = if (spotPrice.compareTo(BigDecimal.ZERO) == 0) 0.0 
+                else executionPrice.subtract(spotPrice).divide(spotPrice, 10, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).toDouble()
+                
+                Pair(formatReadable(readableOut, decimals), priceImpact)
             } else {
-                Pair("Error: Unknown pool type", 0.0)
+                val tokenAmt = amountDec.multiply(BigDecimal.TEN.pow(decimals)).toLong()
+                val (ergOut, _, _, _) = Amm.sellToken(tokenAmt, poolNanoerg, poolTokenBal)
+                val feeMult = BigDecimal.ONE.subtract(BigDecimal.valueOf(fee))
+                val ergReceived = BigDecimal.valueOf(ergOut).multiply(feeMult)
+                
+                val readableOut = ergReceived.divide(BigDecimal.valueOf(1000000000), 9, RoundingMode.HALF_UP)
+                
+                if (poolNanoerg == 0L) return Pair("Pool has no ERG", 0.0)
+                
+                val spotPrice = BigDecimal.valueOf(poolTokenBal).divide(BigDecimal.valueOf(poolNanoerg), 10, RoundingMode.HALF_UP)
+                
+                if (ergReceived.compareTo(BigDecimal.ZERO) == 0) return Pair("Amount too small", 0.0)
+                
+                // Execution price (pure slippage, excluding swap fee)
+                val executionPrice = BigDecimal.valueOf(tokenAmt).divide(BigDecimal.valueOf(ergOut), 10, RoundingMode.HALF_UP)
+                val priceImpact = if (spotPrice.compareTo(BigDecimal.ZERO) == 0) 0.0
+                else executionPrice.subtract(spotPrice).divide(spotPrice, 10, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).toDouble()
+                
+                Pair(formatReadable(readableOut, 9), priceImpact)
             }
-        } catch (e: Exception) {
-            Pair("Error: ${e.message}", 0.0)
+        } else if (poolType == "token") {
+            val tidX = cfg["id_in"] as? String ?: ""
+            val tidY = cfg["id_out"] as? String ?: ""
+            val decX = (cfg["dec_in"] as? Number)?.toInt() ?: 0
+            val decY = (cfg["dec_out"] as? Number)?.toInt() ?: 0
+            val poolBalX = getBal(poolBox, tidX)
+            val poolBalY = getBal(poolBox, tidY)
+
+            if (orderType.equals("sell", ignoreCase = true)) {
+                val amtInX = amountDec.multiply(BigDecimal.TEN.pow(decX))
+                val deltaY = Amm.tokenForToken(amtInX, BigDecimal.valueOf(poolBalX), BigDecimal.valueOf(poolBalY), BigDecimal.valueOf(fee))
+                val readableOut = deltaY.divide(BigDecimal.TEN.pow(decY), decY, RoundingMode.HALF_UP)
+                
+                if (poolBalY == 0L) return Pair("Pool has no $tidY", 0.0)
+                val spotPrice = BigDecimal.valueOf(poolBalX).divide(BigDecimal.valueOf(poolBalY), 10, RoundingMode.HALF_UP)
+                
+                if (deltaY.compareTo(BigDecimal.ZERO) == 0) return Pair("Amount too small", 0.0)
+                
+                // Execution price (pure slippage, excluding swap fee)
+                val effectiveInX = amtInX.multiply(BigDecimal.ONE.subtract(BigDecimal.valueOf(fee)))
+                val executionPrice = effectiveInX.divide(deltaY, 10, RoundingMode.HALF_UP)
+                val priceImpact = if (spotPrice.compareTo(BigDecimal.ZERO) == 0) 0.0
+                else executionPrice.subtract(spotPrice).divide(spotPrice, 10, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).toDouble()
+                
+                Pair(formatReadable(readableOut, decY), priceImpact)
+            } else {
+                val amtInY = amountDec.multiply(BigDecimal.TEN.pow(decY))
+                val deltaX = Amm.tokenForToken(amtInY, BigDecimal.valueOf(poolBalY), BigDecimal.valueOf(poolBalX), BigDecimal.valueOf(fee))
+                val readableOut = deltaX.divide(BigDecimal.TEN.pow(decX), decX, RoundingMode.HALF_UP)
+                
+                if (poolBalX == 0L) return Pair("Pool has no $tidX", 0.0)
+                val spotPrice = BigDecimal.valueOf(poolBalY).divide(BigDecimal.valueOf(poolBalX), 10, RoundingMode.HALF_UP)
+                
+                if (deltaX.compareTo(BigDecimal.ZERO) == 0) return Pair("Amount too small", 0.0)
+                
+                // Execution price (pure slippage, excluding swap fee)
+                val effectiveInY = amtInY.multiply(BigDecimal.ONE.subtract(BigDecimal.valueOf(fee)))
+                val executionPrice = effectiveInY.divide(deltaX, 10, RoundingMode.HALF_UP)
+                val priceImpact = if (spotPrice.compareTo(BigDecimal.ZERO) == 0) 0.0
+                else executionPrice.subtract(spotPrice).divide(spotPrice, 10, RoundingMode.HALF_UP).multiply(BigDecimal.valueOf(100)).toDouble()
+                
+                Pair(formatReadable(readableOut, decX), priceImpact)
+            }
+        } else {
+            Pair("Error: Unknown pool type", 0.0)
         }
     }
 

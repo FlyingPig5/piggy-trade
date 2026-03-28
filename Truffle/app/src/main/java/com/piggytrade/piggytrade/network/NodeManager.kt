@@ -50,7 +50,7 @@ class NodeManager(private val preferenceManager: PreferenceManager) {
 
     init {
         val savedNodes = preferenceManager.loadNodes()
-        val nodesMap = if (savedNodes.isEmpty()) NetworkConfig.NODES else savedNodes
+        val nodesMap = NetworkConfig.NODES + savedNodes
         val nodesList = nodesMap.map { "${it.key}: ${(it.value as Map<*, *>)["url"]}" }
         val savedUrl = preferenceManager.selectedNode
         val index = nodesList.indexOfFirst { it.endsWith(savedUrl) }.coerceAtLeast(0)
@@ -69,7 +69,8 @@ class NodeManager(private val preferenceManager: PreferenceManager) {
      */
     suspend fun initializeNodeClient(
         allowHttp: Boolean,
-        onClientReady: (client: NodeClient, url: String) -> Unit = { _, _ -> }
+        onClientReady: (client: NodeClient, url: String) -> Unit = { _, _ -> },
+        onFailed: (url: String) -> Unit = {}
     ) {
         withContext(Dispatchers.IO) {
             try {
@@ -104,6 +105,10 @@ class NodeManager(private val preferenceManager: PreferenceManager) {
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error initializing node client", e)
+                val failedUrl = _nodeUrl.value.ifEmpty { "unknown" }
+                withContext(Dispatchers.Main) {
+                    onFailed(failedUrl)
+                }
             }
         }
     }
@@ -131,7 +136,7 @@ class NodeManager(private val preferenceManager: PreferenceManager) {
             nodesMap.remove(keyToRemove)
             preferenceManager.saveNodes(nodesMap)
 
-            val newNodesMap = if (nodesMap.isEmpty()) NetworkConfig.NODES else nodesMap
+            val newNodesMap = NetworkConfig.NODES + nodesMap
             val newNodesList = newNodesMap.map { "${it.key}: ${(it.value as Map<*, *>)["url"]}" }
             val newIndex = index.coerceAtMost(newNodesList.size - 1).coerceAtLeast(0)
 
@@ -145,7 +150,7 @@ class NodeManager(private val preferenceManager: PreferenceManager) {
     /** Reload the node list from preferences (e.g. after adding a new node). */
     fun reloadNodes() {
         val savedNodes = preferenceManager.loadNodes()
-        val nodesMap = if (savedNodes.isEmpty()) NetworkConfig.NODES else savedNodes
+        val nodesMap = NetworkConfig.NODES + savedNodes
         val nodesList = nodesMap.map { "${it.key}: ${(it.value as Map<*, *>)["url"]}" }
         _nodes.value = nodesList
     }
