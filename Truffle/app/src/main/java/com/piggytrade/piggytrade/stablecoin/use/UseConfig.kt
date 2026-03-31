@@ -24,6 +24,12 @@ object UseConfig {
 
     // ─── Token IDs ────────────────────────────────────────────────────────────
 
+    /** NFT that identifies the Intervention contract box. */
+    const val INTERVENTION_NFT = "dbf655f0f6101cb03316e931a689412126fefbfb7c78bd9869ad6a1a58c1b424"
+
+    /** Intervention contract P2S address. */
+    const val INTERVENTION_ADDRESS = "8LhYyrgcVuEvZ5vAi57J7MPr3kWNkrWKqbmEVo6AtxGqAzHSZMv1EREN9MDUfsvvRKPLEYJQzexVHkKQGFQ1kCx9TBcXhsNJVSUCXGnWizDsWQCZmLKq8vDGNpmLVKdfwrY5oCTs88qgfDBNiPtBtyQLQq6RiWpQPsjC4oF7GKZDoDSKJTmy3dj82LwWbzePT5AAcyFhxFbtd7Cau7EtA9JZgr4P4YnV3pTiCQLqUw2dnEUqmwynJv63akhCv4qzKNmpQZX85uhzVRxd1MNQj15KjomVdhBSP7asQVF4G8yDzYB4QLfh3GSh5giCeuZc1shLg6PEZPsXRk3ooiXnoEdgjdMoGHJwHVD7YWWz5HAfHLoSxio86TyEx3ijPTGnBJc5ABmbiCJtg417SGhu5UFo8bmaBjzinN7wiukYUTg9Nxki9FUhZzCGuyezJei1gtLZa5fnBmkduLruMkJYpVSePhrYyezFDyA5RkcgJ29WatiwFeCgGHP4Ky6SZ7N3TatKNJzXaQxbqFb7Rfbaozvp3NUyezzJtaNd2qbKMTd8RtzdjkpoMeLMqeMGdd7cZZVdBcBrEMSh7iJr1WRRvj9hemHPZSMd4eoyWyj68XNzwGudkYarq3cUPLfiE7rMzmd5KTKQ9jFYBH5svHMth4AMnmfckZDLXAD66VmsHwGRikGYprYiBEMdD2DchidcMoVCdnJGZBmXm6DsXnJQDCMrDCfJWFFoExu9yxkGPkVxbGAGLosHPk8nk6cKBUtzK1niXtE9bwgGDYKZL19Lmbqk6t6bQvCnt25sC37raMPHr4R7Q5MFvKeSj9TtLU61ZW2pWonrsCp7eTXVCg7mRENrRx3JFoSckB4gD7fEns4385Lzu6Y"
+
     /** NFT / token that identifies the Freemint contract box. (free_mint_token) */
     const val FREEMINT_NFT = "40db16e1ed50b16077b19102390f36b41ca35c64af87426d04af3b9340859051"
 

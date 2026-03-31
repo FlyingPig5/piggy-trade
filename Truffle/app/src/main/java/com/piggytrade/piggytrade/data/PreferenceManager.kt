@@ -12,6 +12,14 @@ import com.google.gson.reflect.TypeToken
 class PreferenceManager(context: Context) {
     private val gson = Gson()
 
+    /**
+     * Separate, non-encrypted SharedPreferences for transaction cache.
+     * Kept separate so large tx payloads don't stress EncryptedSharedPreferences
+     * and so the cache can be cleared independently.
+     */
+    private val txCachePrefs: SharedPreferences =
+        context.getSharedPreferences("piggy_tx_cache", Context.MODE_PRIVATE)
+
     private val prefs: SharedPreferences = try {
         val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
         val encPrefs = EncryptedSharedPreferences.create(
@@ -67,6 +75,8 @@ class PreferenceManager(context: Context) {
         private const val KEY_SELECTED_NODE = "selected_node"
         private const val KEY_SELECTED_WALLET = "selected_wallet"
         const val KEY_NUM_FAVORITES = "num_favorites"
+        /** Max transactions stored per wallet in the cache. */
+        const val TX_CACHE_MAX = 300
     }
 
     fun saveWallets(wallets: Map<String, Any>) {
@@ -171,5 +181,34 @@ class PreferenceManager(context: Context) {
         } catch (e: Exception) {
             emptyMap()
         }
+    }
+
+    // ─── WALLET TRANSACTION CACHE ────────────────────────────────────────────
+
+
+    /**
+     * Persist the last [TX_CACHE_MAX] transactions for a wallet to the
+     * separate, non-encrypted tx-cache prefs file.
+     *
+     * @param walletKey  Internal wallet name (no "(Ergopay)" suffix)
+     * @param trades     Full serialisable list of transactions (only the map form)
+     */
+    fun saveWalletTxCache(walletKey: String, tradesJson: String) {
+        txCachePrefs.edit().putString("tx_cache_$walletKey", tradesJson).apply()
+    }
+
+    /**
+     * Load cached transactions for a wallet. Returns an empty JSON array string
+     * if nothing is cached or the cache is corrupt.
+     */
+    fun loadWalletTxCache(walletKey: String): String {
+        return txCachePrefs.getString("tx_cache_$walletKey", null) ?: "[]"
+    }
+
+    /**
+     * Clear the tx cache for a single wallet (e.g. after delete).
+     */
+    fun clearWalletTxCache(walletKey: String) {
+        txCachePrefs.edit().remove("tx_cache_$walletKey").apply()
     }
 }

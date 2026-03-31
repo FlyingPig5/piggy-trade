@@ -42,6 +42,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
 import coil.request.ImageRequest
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material3.Icon
 
 @Composable
 fun SyncProgressPopup(progress: SyncProgress, onDismiss: () -> Unit) {
@@ -569,20 +572,25 @@ fun TopHoldersDialog(
     onAddressClick: ((String) -> Unit)? = null
 ) {
     var holders by remember { mutableStateOf<List<Pair<String, Long>>>(emptyList()) }
+    var lastSyncedMs by remember { mutableStateOf(0L) }
     var isLoading by remember { mutableStateOf(true) }
     var fetchedBoxes by remember { mutableStateOf(0) }
     var errorMsg by remember { mutableStateOf<String?>(null) }
     var showExploreAddr by remember { mutableStateOf<String?>(null) }
+    var forceRefreshTrigger by remember { mutableStateOf(0) }
 
-    LaunchedEffect(tokenId) {
+    LaunchedEffect(tokenId, forceRefreshTrigger) {
         isLoading = true
         errorMsg = null
         try {
-            holders = viewModel.fetchTopHolders(
+            val entry = viewModel.fetchTopHolders(
                 tokenId = tokenId,
                 decimals = decimals,
+                forceRefresh = forceRefreshTrigger > 0,
                 onProgress = { fetched -> fetchedBoxes = fetched }
-            ).holders
+            )
+            holders = entry.holders
+            lastSyncedMs = entry.lastSyncedMs
         } catch (e: Exception) {
             errorMsg = e.message ?: "Failed to fetch holders"
         }
@@ -629,6 +637,32 @@ fun TopHoldersDialog(
                 } else if (errorMsg != null) {
                     Text(errorMsg!!, color = ColorDanger, fontSize = 13.sp)
                 } else {
+                    // Cache age & refresh row
+                    if (lastSyncedMs > 0) {
+                        val timeAgo = run {
+                            val diffSecs = (System.currentTimeMillis() - lastSyncedMs) / 1000
+                            when {
+                                diffSecs < 60 -> "just now"
+                                diffSecs < 3600 -> "${diffSecs / 60} mins ago"
+                                diffSecs < 86400 -> "${diffSecs / 3600} hours ago"
+                                else -> "${diffSecs / 86400} days ago"
+                            }
+                        }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { forceRefreshTrigger++ }
+                                .padding(vertical = 6.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Rounded.Refresh, contentDescription = "Refresh", tint = ColorTextDim, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Synced $timeAgo \u2014 tap to resync", color = ColorTextDim, fontSize = 11.sp)
+                        }
+                    }
+
                     // Header row
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),

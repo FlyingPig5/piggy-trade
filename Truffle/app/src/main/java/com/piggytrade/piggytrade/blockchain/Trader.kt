@@ -70,7 +70,7 @@ class Trader(
                 val feeMult = BigDecimal.ONE.subtract(BigDecimal.valueOf(fee))
                 val ergAmm = nergToSend.multiply(feeMult).toLong()
                 val (delta, _, _) = Amm.buyToken(ergAmm, poolNanoerg, poolTokenBal)
-                val readableOut = delta.divide(BigDecimal.TEN.pow(decimals), decimals, RoundingMode.HALF_UP)
+                val readableOut = delta.divide(BigDecimal.TEN.pow(decimals), decimals, RoundingMode.DOWN)
                 
                 if (poolTokenBal == 0L) return Pair("Pool has no tokens", 0.0)
                 
@@ -90,7 +90,7 @@ class Trader(
                 val feeMult = BigDecimal.ONE.subtract(BigDecimal.valueOf(fee))
                 val ergReceived = BigDecimal.valueOf(ergOut).multiply(feeMult)
                 
-                val readableOut = ergReceived.divide(BigDecimal.valueOf(1000000000), 9, RoundingMode.HALF_UP)
+                val readableOut = ergReceived.divide(BigDecimal.valueOf(1000000000), 9, RoundingMode.DOWN)
                 
                 if (poolNanoerg == 0L) return Pair("Pool has no ERG", 0.0)
                 
@@ -116,7 +116,7 @@ class Trader(
             if (orderType.equals("sell", ignoreCase = true)) {
                 val amtInX = amountDec.multiply(BigDecimal.TEN.pow(decX))
                 val deltaY = Amm.tokenForToken(amtInX, BigDecimal.valueOf(poolBalX), BigDecimal.valueOf(poolBalY), BigDecimal.valueOf(fee))
-                val readableOut = deltaY.divide(BigDecimal.TEN.pow(decY), decY, RoundingMode.HALF_UP)
+                val readableOut = deltaY.divide(BigDecimal.TEN.pow(decY), decY, RoundingMode.DOWN)
                 
                 if (poolBalY == 0L) return Pair("Pool has no $tidY", 0.0)
                 val spotPrice = BigDecimal.valueOf(poolBalX).divide(BigDecimal.valueOf(poolBalY), 10, RoundingMode.HALF_UP)
@@ -133,7 +133,7 @@ class Trader(
             } else {
                 val amtInY = amountDec.multiply(BigDecimal.TEN.pow(decY))
                 val deltaX = Amm.tokenForToken(amtInY, BigDecimal.valueOf(poolBalY), BigDecimal.valueOf(poolBalX), BigDecimal.valueOf(fee))
-                val readableOut = deltaX.divide(BigDecimal.TEN.pow(decX), decX, RoundingMode.HALF_UP)
+                val readableOut = deltaX.divide(BigDecimal.TEN.pow(decX), decX, RoundingMode.DOWN)
                 
                 if (poolBalX == 0L) return Pair("Pool has no $tidX", 0.0)
                 val spotPrice = BigDecimal.valueOf(poolBalY).divide(BigDecimal.valueOf(poolBalX), 10, RoundingMode.HALF_UP)
@@ -159,7 +159,7 @@ class Trader(
     }
 
     private fun formatReadable(value: BigDecimal, dec: Int): String {
-        return value.setScale(dec, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+        return value.setScale(dec, RoundingMode.DOWN).stripTrailingZeros().toPlainString()
     }
 
     suspend fun buildSwapTransaction(

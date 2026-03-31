@@ -287,6 +287,19 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     val oraclePriceStore = session.oraclePriceStore
     private var quoteJob: kotlinx.coroutines.Job? = null
 
+    /** Cancellable job for the in-flight transaction history fetch. Cancelled on wallet switch. */
+    private var historyJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * In-memory transaction cache keyed by internal wallet name.
+     * Populated from disk on first access and updated after every successful fetch.
+     * Allows instant display when switching wallets or returning to the wallet screen.
+     */
+    private val txCache = mutableMapOf<String, List<NetworkTransaction>>()
+
+    /** Gson used for tx cache serialisation (plain, no special policies needed). */
+    private val cacheGson = com.google.gson.GsonBuilder().create()
+
     private val _uiState: MutableStateFlow<SwapState> by lazy {
         if (BuildConfig.DEBUG) Log.d(TAG, "Initializing MutableStateFlow...")
         // Node list is owned by NodeManager — read from there to avoid duplication
@@ -367,6 +380,17 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         // 1. Initial immediate list setup (no network)
         loadPoolMappings(fetchLiquidity = false)
 
+        // Pre-warm tx cache from disk for the initial wallet so WalletInfoScreen is instant
+        val initWalletKey = _uiState.value.selectedWallet.replace(" (Ergopay)", "").trim()
+        if (initWalletKey.isNotEmpty() && initWalletKey != "Select Wallet") {
+            viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                val cached = loadTxCacheFromDisk(initWalletKey)
+                if (cached.isNotEmpty()) {
+                    synchronized(txCache) { txCache[initWalletKey] = cached }
+                }
+            }
+        }
+
         // 2. Offload heavy background tasks
         viewModelScope.launch {
             withContext(kotlinx.coroutines.Dispatchers.Default) {
@@ -395,6 +419,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             if (!tokenRepository.hasTokenFiles()) {
                 syncTokenList(isFirstLaunch = true)
             }
+
             
             // Mirror active read operations across all ViewModels to the Top Bar UI
             viewModelScope.launch {
@@ -572,7 +597,9 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
      */
     private suspend fun <T> readNode(block: suspend (NodeClient) -> T): T {
         return nodePool.withRetryTracked(
-            maxRetries = nodePool.size.coerceAtLeast(1),
+            // Use liveSize so we only retry nodes that actually passed probeAll().
+            // Avoids spinning through every dead node before succeeding.
+            maxRetries = nodePool.liveSize.coerceAtLeast(1),
             onTrying = { url ->
                 withContext(Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(nodeStatus = NodeStatus.Trying(url))
@@ -1086,6 +1113,9 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 val selectedAddrs = if (savedSelected.isNotEmpty()) savedSelected else if (addr.isNotEmpty()) setOf(addr) else emptySet()
                 val changeAddr = if (savedChange.isNotEmpty()) savedChange else addr
 
+                // Pre-populate tx list from in-memory cache for instant display
+                val cachedTrades = synchronized(txCache) { txCache[internalKey] } ?: emptyList()
+
                 _uiState.value = current.copy(
                     selectedWallet = item,
                     selectedAddress = addr,
@@ -1094,12 +1124,15 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                     changeAddress = changeAddr,
                     walletTokens = emptyMap(),
                     walletErgBalance = 0.0,
-                    networkTrades = emptyList()
+                    // Show cached transactions immediately; fetchTransactionHistory() will refresh
+                    networkTrades = cachedTrades,
+                    historyOffset = cachedTrades.size
                 )
                 preferenceManager.selectedWallet = internalKey
                 fetchWalletBalances(force = true)
                 updateBalances()
                 fetchTransactionHistory()
+
             }
             "node" -> {
                 val index = current.nodes.indexOf(item)
@@ -1872,6 +1905,63 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Save partial scan progress so the sync can resume if the app is killed mid-scan.
+     * Stores lightweight (boxId, address, tokenId, amount) tuples + the next offset to resume from.
+     */
+    private fun savePartialProgress(tokenId: String, boxes: Collection<Map<String, Any>>, nextOffset: Int) {
+        try {
+            val arr = org.json.JSONArray()
+            for (box in boxes) {
+                val boxId = box["boxId"] as? String ?: continue
+                val address = box["address"] as? String ?: continue
+                @Suppress("UNCHECKED_CAST")
+                val assets = box["assets"] as? List<Map<String, Any>> ?: continue
+                for (asset in assets) {
+                    if ((asset["tokenId"] as? String) == tokenId) {
+                        val amount = (asset["amount"] as? Number)?.toLong() ?: 0L
+                        arr.put(org.json.JSONObject()
+                            .put("b", boxId)
+                            .put("a", address)
+                            .put("v", amount))
+                    }
+                }
+            }
+            val json = org.json.JSONObject()
+                .put("nextOffset", nextOffset)
+                .put("boxes", arr)
+            java.io.File(getApplication<Application>().filesDir, "holders_partial_$tokenId.json")
+                .writeText(json.toString())
+        } catch (e: Exception) {
+            if (BuildConfig.DEBUG) Log.d(TAG, "Failed to save partial progress: ${e.message}")
+        }
+    }
+
+    /**
+     * Load partial scan progress. Returns (list of (boxId, address, amount), resumeOffset) or null.
+     */
+    private fun loadPartialProgress(tokenId: String): Pair<List<Triple<String, String, Long>>, Int>? {
+        try {
+            val file = java.io.File(getApplication<Application>().filesDir, "holders_partial_$tokenId.json")
+            if (!file.exists()) return null
+            val json = org.json.JSONObject(file.readText())
+            val nextOffset = json.getInt("nextOffset")
+            val arr = json.getJSONArray("boxes")
+            val list = mutableListOf<Triple<String, String, Long>>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                list.add(Triple(obj.getString("b"), obj.getString("a"), obj.getLong("v")))
+            }
+            return list to nextOffset
+        } catch (e: Exception) { return null }
+    }
+
+    private fun deletePartialProgress(tokenId: String) {
+        try {
+            java.io.File(getApplication<Application>().filesDir, "holders_partial_$tokenId.json").delete()
+        } catch (_: Exception) {}
+    }
+
     suspend fun fetchTopHolders(
         tokenId: String,
         decimals: Int,
@@ -1887,11 +1977,31 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        // If force-refreshing, clear any stale partial file
+        if (forceRefresh) deletePartialProgress(tokenId)
+
         val limit = 500
         val offsetCounter = java.util.concurrent.atomic.AtomicInteger(0)
         val isFinished = java.util.concurrent.atomic.AtomicBoolean(false)
         val allBoxes = java.util.concurrent.ConcurrentLinkedQueue<Map<String, Any>>()
         val totalFetchedCounter = java.util.concurrent.atomic.AtomicInteger(0)
+
+        // ── Resume from partial progress if available ──
+        val addressBalances = mutableMapOf<String, Long>()
+        val partial = loadPartialProgress(tokenId)
+        if (partial != null) {
+            val (savedBoxes, resumeOffset) = partial
+            for ((_, addr, amount) in savedBoxes) {
+                addressBalances[addr] = (addressBalances[addr] ?: 0L) + amount
+            }
+            offsetCounter.set(resumeOffset)
+            totalFetchedCounter.set(savedBoxes.size)
+            onProgress(savedBoxes.size)
+            if (BuildConfig.DEBUG) Log.d(TAG, "Resuming holder scan for $tokenId from offset $resumeOffset (${savedBoxes.size} boxes cached)")
+        }
+
+        // ── Parallel fetch with periodic checkpoint ──
+        val checkpointCounter = java.util.concurrent.atomic.AtomicInteger(0)
 
         coroutineScope {
             val workers = List(4) {
@@ -1911,6 +2021,11 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                                 allBoxes.addAll(boxes)
                                 val currentTotal = totalFetchedCounter.addAndGet(boxes.size)
                                 onProgress(currentTotal)
+
+                                // Save checkpoint every ~2000 boxes (4 batches of 500)
+                                if (checkpointCounter.incrementAndGet() % 4 == 0) {
+                                    savePartialProgress(tokenId, allBoxes, offsetCounter.get())
+                                }
                             }
 
                             if (boxes.size < limit || boxes.isEmpty()) {
@@ -1918,6 +2033,8 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                             }
                         } catch (e: Exception) {
                             if (BuildConfig.DEBUG) Log.d(TAG, "Worker failed at offset $currentOffset: ${e.message}")
+                            // Save progress before stopping so it can be resumed
+                            savePartialProgress(tokenId, allBoxes, currentOffset)
                             isFinished.set(true)
                         }
                     }
@@ -1926,10 +2043,19 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             workers.awaitAll()
         }
 
-        val addressBalances = mutableMapOf<String, Long>()
-        val uniqueBoxes = allBoxes.distinctBy { it["boxId"] as? String ?: it.hashCode().toString() }
+        // ── Aggregate: merge resumed partial balances with newly fetched boxes ──
+        val seenBoxIds = mutableSetOf<String>()
+        // If we resumed, the partial boxes are already in addressBalances.
+        // Mark their box IDs as seen so we don't double-count.
+        if (partial != null) {
+            for ((boxId, _, _) in partial.first) {
+                seenBoxIds.add(boxId)
+            }
+        }
 
-        for (box in uniqueBoxes) {
+        for (box in allBoxes) {
+            val boxId = box["boxId"] as? String ?: continue
+            if (!seenBoxIds.add(boxId)) continue // skip duplicates
             val address = box["address"] as? String ?: continue
             @Suppress("UNCHECKED_CAST")
             val assets = box["assets"] as? List<Map<String, Any>> ?: continue
@@ -1949,6 +2075,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
         val entry = HoldersCacheEntry(sortedList, System.currentTimeMillis())
         topHoldersCache[tokenId] = entry
         saveTopHoldersCache(tokenId, entry)
+        deletePartialProgress(tokenId) // clean up — scan complete
         return entry
     }
 
@@ -2661,7 +2788,7 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     fun clearSendState() {
         _uiState.value = _uiState.value.copy(
             sendRecipients = listOf(SendRecipientState()),
-            sendMinerFee = 0.0011,
+            sendMinerFee = 0.001,
             isBuildingSendTx = false,
             sendError = null,
             sendReviewParams = null,
@@ -2978,6 +3105,9 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun fetchTransactionHistory(loadMore: Boolean = false) {
+        // Snapshot the wallet key and addresses at call time — guard against wallet change mid-flight
+        val walletKey = _uiState.value.selectedWallet.replace(" (Ergopay)", "").trim()
+
         // Fetch from ALL wallet addresses, not just selected, so we see all wallet activity
         val allAddrs = _uiState.value.walletAddresses.toSet()
         val selectedAddrs = _uiState.value.selectedAddresses
@@ -2987,18 +3117,33 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
             if (fallbackAddress.isEmpty()) return
             setOf(fallbackAddress)
         }
-        if (BuildConfig.DEBUG) Log.d(TAG, "fetchTransactionHistory: walletAddresses=${allAddrs.size}, selected=${selectedAddrs.size}, fetching=${addressesToFetch.size} addresses: ${addressesToFetch.map { it.take(8) }}")
+        if (BuildConfig.DEBUG) Log.d(TAG, "fetchTransactionHistory: wallet=$walletKey, addrs=${addressesToFetch.size}, loadMore=$loadMore")
 
         if (loadMore) {
             if (_uiState.value.isLoadingHistory) return
         } else {
-            _uiState.value = _uiState.value.copy(networkTrades = emptyList(), historyOffset = 0)
+            // ── CANCEL any previous in-flight fetch ──────────────────────────
+            historyJob?.cancel()
+
+            // ── CACHE-FIRST: show cached data immediately while network loads ─
+            val cached = synchronized(txCache) { txCache[walletKey] }
+                ?: loadTxCacheFromDisk(walletKey).also { disk ->
+                    if (disk.isNotEmpty()) synchronized(txCache) { txCache[walletKey] = disk }
+                }
+
+            if (cached.isNotEmpty()) {
+                _uiState.value = _uiState.value.copy(
+                    networkTrades = cached,
+                    historyOffset = cached.size,
+                    isLoadingHistory = true   // still show spinner while refreshing
+                )
+            } else {
+                _uiState.value = _uiState.value.copy(networkTrades = emptyList(), historyOffset = 0)
+            }
         }
         _uiState.value = _uiState.value.copy(isLoadingHistory = true)
 
-        // Market sync is now managed by MarketViewModel — no pause needed
-
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        historyJob = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val pageSize = 50
                 val currentLimit = if (loadMore) _uiState.value.historyOffset + pageSize else pageSize
@@ -3080,6 +3225,14 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                 awaitAll(*txJobs.toTypedArray()).forEach { newTrades.addAll(it) }
 
                 withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    // ── WALLET GUARD: discard results if the wallet changed mid-flight ──
+                    val currentWalletKey = _uiState.value.selectedWallet.replace(" (Ergopay)", "").trim()
+                    if (currentWalletKey != walletKey) {
+                        Log.w(TAG, "Wallet changed during fetch ($walletKey → $currentWalletKey) — discarding stale results")
+                        _uiState.value = _uiState.value.copy(isLoadingHistory = false)
+                        return@withContext
+                    }
+
                     // We re-fetch from offset 0, so we just use the new trades, sort globally,
                     // and strictly cut off at currentLimit to perfectly paginate across independent streams.
                     val finalTrades = newTrades
@@ -3094,16 +3247,61 @@ class SwapViewModel(application: Application) : AndroidViewModel(application) {
                         historyOffset = currentLimit,
                         isLoadingHistory = false
                     )
+
+                    // ── CACHE: save fresh results to memory + disk ──────────────────
+                    // For loadMore we save the growing list; initial fetches (≤ TX_CACHE_MAX) are always cached.
+                    if (finalTrades.isNotEmpty()) {
+                        val toCache = finalTrades.take(PreferenceManager.TX_CACHE_MAX)
+                        synchronized(txCache) { txCache[walletKey] = toCache }
+                        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            saveTxCacheToDisk(walletKey, toCache)
+                        }
+                    }
                 }
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e  // Don't swallow cancellation
                 withContext(kotlinx.coroutines.Dispatchers.Main) {
                     _uiState.value = _uiState.value.copy(isLoadingHistory = false)
                 }
-            } finally {
-                // Market sync (if it was running) is now managed by MarketViewModel — no resume needed
             }
         }
     }
+
+    // ─── TX CACHE HELPERS ───────────────────────────────────────────────────
+
+    /**
+     * Serialize [trades] to JSON and persist them under [walletKey] in the
+     * dedicated tx-cache SharedPreferences file. Capped at [PreferenceManager.TX_CACHE_MAX].
+     * Must be called from a background thread.
+     */
+    private fun saveTxCacheToDisk(walletKey: String, trades: List<NetworkTransaction>) {
+        try {
+            val type = object : com.google.gson.reflect.TypeToken<List<NetworkTransaction>>() {}.type
+            val json = cacheGson.toJson(trades.take(PreferenceManager.TX_CACHE_MAX), type)
+            preferenceManager.saveWalletTxCache(walletKey, json)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to save tx cache for $walletKey", e)
+        }
+    }
+
+    /**
+     * Deserialize and return cached transactions for [walletKey].
+     * Returns an empty list if nothing is cached or deserialization fails.
+     * Must be called from a background thread.
+     */
+    private fun loadTxCacheFromDisk(walletKey: String): List<NetworkTransaction> {
+        return try {
+            val json = preferenceManager.loadWalletTxCache(walletKey)
+            if (json == "[]") return emptyList()
+            val type = object : com.google.gson.reflect.TypeToken<List<NetworkTransaction>>() {}.type
+            cacheGson.fromJson<List<NetworkTransaction>>(json, type) ?: emptyList()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to load tx cache for $walletKey", e)
+            emptyList()
+        }
+    }
+
+
 
     // ─── ADDRESS EXPLORER ─────────────────────────────────────────────────
 

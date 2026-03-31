@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -91,7 +92,7 @@ fun EcosystemScreen(viewModel: SwapViewModel, marketViewModel: MarketViewModel, 
             val l = tx.protocol.lowercase()
             when (filter) {
                 "dex" -> l.contains("dex") || l.contains("lp swap")
-                "stablecoin" -> l.contains("bank") || l.contains("freemint") || l.contains("arbmint")
+                "stablecoin" -> l.contains("bank") || l.contains("freemint") || l.contains("arbmint") || l.contains("intervention")
                 else -> true
             }
         }
@@ -246,7 +247,9 @@ fun EcosystemScreen(viewModel: SwapViewModel, marketViewModel: MarketViewModel, 
                         Text("No recent trades found", color = ColorTextDim, fontSize = 13.sp)
                     }
                 } else {
+                    val tradesListState = rememberLazyListState()
                     LazyColumn(
+                        state = tradesListState,
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
@@ -476,6 +479,36 @@ fun EcosystemScreen(viewModel: SwapViewModel, marketViewModel: MarketViewModel, 
                                     Text(ageStr, color = ColorTextDim, fontSize = 10.sp)
                                 }
                             }
+                        }
+                        // ── Load more trades spinner ──
+                        if (marketState.isLoadingMorePoolTrades) {
+                            item {
+                                Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator(color = ColorAccent, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                                }
+                            }
+                        } else if (!marketState.hasMorePoolTrades && poolTrades.size > 5) {
+                            item {
+                                Text(
+                                    "All trades loaded",
+                                    color = ColorTextDim, fontSize = 10.sp,
+                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                    // ── Scroll-to-end detection for pool trades ──
+                    val shouldLoadMoreTrades = remember {
+                        androidx.compose.runtime.derivedStateOf {
+                            val lastVisible = tradesListState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                            val totalItems = tradesListState.layoutInfo.totalItemsCount
+                            totalItems > 0 && lastVisible >= totalItems - 3
+                        }
+                    }
+                    LaunchedEffect(shouldLoadMoreTrades.value) {
+                        if (shouldLoadMoreTrades.value && !marketState.isLoadingMorePoolTrades && marketState.hasMorePoolTrades && selectedChartToken != null) {
+                            marketViewModel.fetchMorePoolTrades(selectedChartToken)
                         }
                     }
                 }
@@ -944,24 +977,44 @@ fun EcosystemScreen(viewModel: SwapViewModel, marketViewModel: MarketViewModel, 
                     }
                 }
             } else {
+                val activityListState = rememberLazyListState()
                 LazyColumn(
+                    state = activityListState,
                     modifier = Modifier.fillMaxSize(),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     items(filteredActivity) { tx ->
                         EcosystemTxRow(tx = tx, onAddressClick = onNavigateToAddressExplorer)
                     }
-                    item {
-                        // Only try to load more if we have enough items and are not already loading
-                        if (!marketState.isLoadingEcosystem && filteredActivity.size >= 10) {
-                            LaunchedEffect(filteredActivity.size) {
-                                marketViewModel.fetchMoreEcosystemActivity()
-                            }
-                        } else if (marketState.isLoadingEcosystem) {
+                    // Bottom spinner when loading more
+                    if (marketState.isLoadingEcosystem) {
+                        item {
                             Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator(color = ColorAccent, modifier = Modifier.size(20.dp))
+                                CircularProgressIndicator(color = ColorAccent, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                             }
                         }
+                    } else if (!marketState.hasMoreEcosystem && filteredActivity.size > 5) {
+                        item {
+                            Text(
+                                "All activity loaded",
+                                color = ColorTextDim, fontSize = 10.sp,
+                                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                }
+                // ── Scroll-to-end detection for ecosystem activity ──
+                val shouldLoadMoreActivity = remember {
+                    androidx.compose.runtime.derivedStateOf {
+                        val lastVisible = activityListState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                        val totalItems = activityListState.layoutInfo.totalItemsCount
+                        totalItems > 0 && lastVisible >= totalItems - 3
+                    }
+                }
+                LaunchedEffect(shouldLoadMoreActivity.value) {
+                    if (shouldLoadMoreActivity.value && !marketState.isLoadingEcosystem && marketState.hasMoreEcosystem && filteredActivity.size >= 10) {
+                        marketViewModel.fetchMoreEcosystemActivity()
                     }
                 }
             }
@@ -1020,10 +1073,12 @@ private fun ErgPriceChartCard(
         colors = CardDefaults.cardColors(containerColor = ColorCard),
         shape = RoundedCornerShape(16.dp)
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            // Header row: Token selector + price + range + share
+        Column(modifier = Modifier.padding(10.dp)) {
+            // Header row: Token selector + share
+            var rangeDropdownExpanded by remember { mutableStateOf(false) }
+
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1139,119 +1194,6 @@ private fun ErgPriceChartCard(
                     }
                 }
 
-                // Current price
-                if (selectedToken != null) {
-                    val latestPrice = viewModel.oraclePriceStore.getTokenLatestPrice(selectedToken)
-                    if (latestPrice != null) {
-                        val ergPriceUsd = uiState.ergPriceUsd
-                        Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                "${String.format("%.6f", latestPrice)} ERG",
-                                color = ColorAccent, fontSize = 14.sp, fontWeight = FontWeight.Bold
-                            )
-                            if (ergPriceUsd != null) {
-                                val usePrice = latestPrice * ergPriceUsd
-                                Text(
-                                    "/ ${String.format("%.3f", usePrice)} \$USE",
-                                    color = Color.White.copy(alpha = 0.75f), fontSize = 11.sp
-                                )
-                            }
-                        }
-                    } else if (viewModel.oraclePriceStore.isTokenSyncing) {
-                        CircularProgressIndicator(color = ColorAccent, modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                    }
-                } else {
-                    val currentPrice = uiState.ergPriceUsd
-                    if (currentPrice != null) {
-                        Text(
-                            "$${String.format("%.4f", currentPrice)}",
-                            color = ColorAccent, fontSize = 14.sp, fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-            }
-
-            // ── Stats row: price change + volume (token pairs only) ────────
-            if (selectedToken != null) {
-                val history = uiState.tokenPriceHistory
-                val priceChangePct = if (history.size >= 2) {
-                    val first = history.first().second
-                    val last = history.last().second
-                    if (first > 0.0) ((last - first) / first) * 100.0 else null
-                } else null
-
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Price change for selected period
-                    if (priceChangePct != null) {
-                        val isUp = priceChangePct >= 0
-                        val changeColor = if (isUp) Color(0xFF4CAF50) else Color(0xFFEF5350)
-                        val arrow = if (isUp) "▲" else "▼"
-                        Text(
-                            "$arrow${String.format("%.1f", Math.abs(priceChangePct))}% ($range)",
-                            color = changeColor, fontSize = 11.sp, fontWeight = FontWeight.Bold
-                        )
-                    }
-                    // Volume
-                    val v24 = uiState.poolVolume24h
-                    val v7d = uiState.poolVolume7d
-                    if (v24 > 0 || v7d > 0) {
-                        Text(
-                            "Vol 24h: ${String.format("%.1f", v24)} ERG · 7d: ${String.format("%.1f", v7d)} ERG",
-                            color = ColorTextDim, fontSize = 10.sp
-                        )
-                    }
-                }
-            } else {
-                // ERG/USD price change for selected period
-                val history = uiState.ergPriceHistory
-                if (history.size >= 2) {
-                    val first = history.first().second
-                    val last = history.last().second
-                    val pct = if (first > 0.0) ((last - first) / first) * 100.0 else null
-                    if (pct != null) {
-                        val isUp = pct >= 0
-                        val changeColor = if (isUp) Color(0xFF4CAF50) else Color(0xFFEF5350)
-                        val arrow = if (isUp) "▲" else "▼"
-                        Text(
-                            "$arrow${String.format("%.1f", Math.abs(pct))}% ($range)",
-                            color = changeColor, fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 4.dp)
-                        )
-                    }
-                }
-            }
-
-            // Range selector + share
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    ranges.forEach { r ->
-                        val isActive = r == range
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = if (isActive) ColorAccent else ColorInputBg,
-                            modifier = Modifier.clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                onClick = { viewModel.setChartRange(r) }
-                            )
-                        ) {
-                            Text(
-                                r, color = if (isActive) ColorBg else Color.White,
-                                fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                            )
-                        }
-                    }
-                }
-
                 Box(
                     modifier = Modifier
                         .size(28.dp)
@@ -1268,7 +1210,137 @@ private fun ErgPriceChartCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
+            // Stats row: Price + diff + range dropdown
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (selectedToken != null) {
+                        val latestPrice = viewModel.oraclePriceStore.getTokenLatestPrice(selectedToken)
+                        if (latestPrice != null) {
+                            val ergPriceUsd = uiState.ergPriceUsd
+                            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    "${String.format("%.6f", latestPrice)} ERG",
+                                    color = ColorAccent, fontSize = 14.sp, fontWeight = FontWeight.Bold
+                                )
+                                if (ergPriceUsd != null) {
+                                    val usePrice = latestPrice * ergPriceUsd
+                                    Text(
+                                        "/ ${String.format("%.3f", usePrice)} \$USE",
+                                        color = Color.White.copy(alpha = 0.75f), fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        } else if (viewModel.oraclePriceStore.isTokenSyncing) {
+                            CircularProgressIndicator(color = ColorAccent, modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                        }
+
+                        // Diff
+                        val history = uiState.tokenPriceHistory
+                        val priceChangePct = if (history.size >= 2) {
+                            val first = history.first().second
+                            val last = history.last().second
+                            if (first > 0.0) ((last - first) / first) * 100.0 else null
+                        } else null
+
+                        if (priceChangePct != null) {
+                            val isUp = priceChangePct >= 0
+                            val changeColor = if (isUp) Color(0xFF4CAF50) else Color(0xFFEF5350)
+                            val arrow = if (isUp) "▲" else "▼"
+                            Text(
+                                "$arrow${String.format("%.1f", Math.abs(priceChangePct))}%",
+                                color = changeColor, fontSize = 11.sp, fontWeight = FontWeight.Bold
+                            )
+                        }
+                    } else {
+                        val currentPrice = uiState.ergPriceUsd
+                        if (currentPrice != null) {
+                            Text(
+                                "$${String.format("%.4f", currentPrice)}",
+                                color = ColorAccent, fontSize = 14.sp, fontWeight = FontWeight.Bold
+                            )
+                        }
+                        val history = uiState.ergPriceHistory
+                        if (history.size >= 2) {
+                            val first = history.first().second
+                            val last = history.last().second
+                            val pct = if (first > 0.0) ((last - first) / first) * 100.0 else null
+                            if (pct != null) {
+                                val isUp = pct >= 0
+                                val changeColor = if (isUp) Color(0xFF4CAF50) else Color(0xFFEF5350)
+                                val arrow = if (isUp) "▲" else "▼"
+                                Text(
+                                    "$arrow${String.format("%.1f", Math.abs(pct))}%",
+                                    color = changeColor, fontSize = 11.sp, fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Range Dropdown
+                Box {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = ColorInputBg,
+                        modifier = Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { rangeDropdownExpanded = true }
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(range, color = ColorAccent, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text("▾", color = ColorAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = rangeDropdownExpanded,
+                        onDismissRequest = { rangeDropdownExpanded = false },
+                        modifier = Modifier.width(100.dp)
+                    ) {
+                        ranges.forEach { r ->
+                            val isActive = r == range
+                            DropdownMenuItem(
+                                text = { 
+                                    Text(
+                                        r, 
+                                        color = if (isActive) ColorAccent else Color.White,
+                                        fontSize = 12.sp,
+                                        fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal
+                                    ) 
+                                },
+                                onClick = {
+                                    viewModel.setChartRange(r)
+                                    rangeDropdownExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Volume (if applicable)
+            if (selectedToken != null) {
+                val v24 = uiState.poolVolume24h
+                val v7d = uiState.poolVolume7d
+                if (v24 > 0 || v7d > 0) {
+                    Text(
+                        "Vol 24h: ${String.format("%.1f", v24)} ERG · 7d: ${String.format("%.1f", v7d)} ERG",
+                        color = ColorTextDim, fontSize = 10.sp,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
 
             // Syncing message for tokens
             if (selectedToken != null && viewModel.oraclePriceStore.isTokenSyncing && uiState.tokenPriceHistory.isEmpty()) {
@@ -1318,7 +1390,7 @@ private fun ErgPriceChartCard(
                         modifier = Modifier.padding(bottom = 4.dp)
                     )
 
-                    Row(modifier = Modifier.fillMaxWidth().height(200.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth().height(150.dp)) {
                         Canvas(modifier = Modifier.weight(1f).fillMaxHeight()) {
                             val w = size.width; val h = size.height
                             val chartTop = 4f; val chartHeight = h - 30f
@@ -1519,7 +1591,7 @@ private fun TokenPriceChart(
         modifier = Modifier.padding(bottom = 4.dp)
     )
 
-    Row(modifier = Modifier.fillMaxWidth().height(200.dp)) {
+    Row(modifier = Modifier.fillMaxWidth().height(150.dp)) {
         Canvas(modifier = Modifier.weight(1f).fillMaxHeight()) {
             val w = size.width; val h = size.height
             val chartTop = 4f; val chartHeight = h - 30f

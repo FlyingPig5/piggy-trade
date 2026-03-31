@@ -157,7 +157,9 @@ fun WalletInfoContent(
     var showDeleteConfirm1 by remember { mutableStateOf(false) }
     var showDeleteConfirm2 by remember { mutableStateOf(false) }
     
-    LaunchedEffect(Unit) {
+    // Re-run when walletName changes so switching wallets always triggers a fresh fetch.
+    // fetchTransactionHistory() shows cached data instantly and then refreshes in background.
+    LaunchedEffect(walletName) {
         viewModel.fetchWalletBalances()
         viewModel.fetchTransactionHistory()
         marketViewModel.fetchTokenUsdValues(uiState.walletTokens, uiState.whitelistedPools, uiState.discoveredPools, uiState.includeUnconfirmed)

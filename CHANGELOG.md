@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.3 — 2026-03-31
+### Enhancements
+- **Ecosystem Chart Optimization**: Condensed the Ecosystem tab's price chart to maximize screen real estate for the activity feed. Replaced duration chips (24H, 7D, etc.) with a compact dropdown menu and unified price, change percentage, and range labels on a single line. Reduced overall chart height from 200dp to 150dp.
+- **Wallet Transaction Sync**: Added a reactive trigger to `WalletInfoScreen` ensuring transaction history and balances refresh immediately when switching between multiple wallets. Swiping between wallets now provides instant visual feedback while data enriches in the background.
+- **API Optimizations**: Furhter optimizations in nodemanager to avoid competing API calls. 
+
 ## 0.8.2 — 2026-03-24
 ### Enhancements
 - **Codebase Cleanup**: Removed redundant syncing jobs (`oracleSyncJob`, `marketSyncJob`, `tokenSyncJob`), dead functions, and unused imports across `SwapViewModel` and `MarketViewModel` to improve maintainability.

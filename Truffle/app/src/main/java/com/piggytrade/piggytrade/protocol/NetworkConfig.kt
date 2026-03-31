@@ -67,6 +67,7 @@ object NetworkConfig {
         com.piggytrade.piggytrade.stablecoin.use.UseConfig.FREEMINT_ADDRESS to "USE Freemint",
         com.piggytrade.piggytrade.stablecoin.use.UseConfig.ARBMINT_ADDRESS to "USE Arbmint",
         com.piggytrade.piggytrade.stablecoin.use.UseConfig.BUYBACK_ADDRESS to "USE Buyback",
+        com.piggytrade.piggytrade.stablecoin.use.UseConfig.INTERVENTION_ADDRESS to "USE Intervention",
         // DexyGold contracts
         com.piggytrade.piggytrade.stablecoin.dexygold.DexyGoldConfig.BANK_ADDRESS to "DexyGold Bank",
         com.piggytrade.piggytrade.stablecoin.dexygold.DexyGoldConfig.FREEMINT_ADDRESS to "DexyGold Freemint",

@@ -57,7 +57,10 @@ data class MarketState(
     val ecosystemTvl: Map<String, Double> = emptyMap(),
     val ecosystemActivity: List<EcosystemTx> = emptyList(),
     val isLoadingEcosystem: Boolean = false,
-    val ecosystemLastFetched: Long = 0L
+    val ecosystemLastFetched: Long = 0L,
+    val hasMoreEcosystem: Boolean = true,
+    val isLoadingMorePoolTrades: Boolean = false,
+    val hasMorePoolTrades: Boolean = true
 )
 
 class MarketViewModel(application: Application) : AndroidViewModel(application) {
@@ -79,6 +82,9 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
     private var isFetchingTokenValues = false
     private var ecosystemActivityCache: List<EcosystemTx> = emptyList()
     private var ecosystemPage = 0
+    private var poolTradesPage = 0
+    private var currentPoolTradesToken: String? = null
+    private var lastPoolBoxForNextPage: Map<String, Any>? = null
     private val poolBoxDataCache = mutableMapOf<String, Map<String, Any>>()
 
     // ─── ERG price / chart ────────────────────────────────────────────────
@@ -279,7 +285,10 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
 
     @Suppress("UNCHECKED_CAST")
     private suspend fun fetchPoolTrades(tokenName: String) {
-        _uiState.value = _uiState.value.copy(isLoadingPoolTrades = true, poolTrades = emptyList(), poolVolume24h = 0.0, poolVolume7d = 0.0)
+        poolTradesPage = 0
+        currentPoolTradesToken = tokenName
+        lastPoolBoxForNextPage = null
+        _uiState.value = _uiState.value.copy(isLoadingPoolTrades = true, poolTrades = emptyList(), poolVolume24h = 0.0, poolVolume7d = 0.0, hasMorePoolTrades = true)
         try {
             val poolNft = tokenRepository.getPoolNftForToken(tokenName) ?: return
             val decimals = tokenRepository.getDecimalsForToken(tokenName)
@@ -289,9 +298,14 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
             
             val (currentHeight, boxes) = nodePool.withRetry { poolClient ->
                 val h = try { poolClient.getHeight() } catch (e: Exception) { 0 }
-                val resp = poolClient.api.getBoxesByTokenId(poolNft, 0, 16)
+                val resp = poolClient.api.getBoxesByTokenId(poolNft, 0, 50)
                 val b = resp["items"] as? List<Map<String, Any>> ?: emptyList()
                 Pair(h, b)
+            }
+            if (boxes.size < 50) {
+                _uiState.value = _uiState.value.copy(hasMorePoolTrades = false)
+            } else {
+                lastPoolBoxForNextPage = boxes.lastOrNull()
             }
             if (boxes.size < 2) return
 
@@ -511,7 +525,7 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
             val cached = loadEcosystemCache()
             if (cached.isNotEmpty()) { ecosystemActivityCache = cached; _uiState.value = _uiState.value.copy(ecosystemActivity = cached) }
         }
-        _uiState.value = _uiState.value.copy(isLoadingEcosystem = true)
+        _uiState.value = _uiState.value.copy(isLoadingEcosystem = true, hasMoreEcosystem = true)
         ecosystemPage = 0
         if (_uiState.value.ergPriceUsd == null) fetchErgPrice()
         viewModelScope.launch(Dispatchers.IO) {
@@ -533,18 +547,143 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
 
     fun fetchMoreEcosystemActivity() {
         if (_uiState.value.isLoadingEcosystem) return
+        if (!_uiState.value.hasMoreEcosystem) return
         val client = nodeClient ?: return
         _uiState.value = _uiState.value.copy(isLoadingEcosystem = true)
         ecosystemPage++
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val more = fetchEcosystemActivityInternal(client, offset = ecosystemPage * 30)
+                val prevSize = ecosystemActivityCache.size
                 withContext(Dispatchers.Main) {
                     ecosystemActivityCache = (ecosystemActivityCache + more).distinctBy { it.txId }.sortedByDescending { it.timestamp }
-                    _uiState.value = _uiState.value.copy(ecosystemActivity = ecosystemActivityCache, isLoadingEcosystem = false)
+                    val grewBy = ecosystemActivityCache.size - prevSize
+                    _uiState.value = _uiState.value.copy(
+                        ecosystemActivity = ecosystemActivityCache,
+                        isLoadingEcosystem = false,
+                        hasMoreEcosystem = grewBy > 0
+                    )
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) { _uiState.value = _uiState.value.copy(isLoadingEcosystem = false) }
+            }
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    fun fetchMorePoolTrades(tokenName: String) {
+        if (_uiState.value.isLoadingMorePoolTrades) return
+        if (!_uiState.value.hasMorePoolTrades) return
+        if (tokenName != currentPoolTradesToken) return
+        _uiState.value = _uiState.value.copy(isLoadingMorePoolTrades = true)
+        poolTradesPage++
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val poolNft = tokenRepository.getPoolNftForToken(tokenName) ?: run {
+                    _uiState.value = _uiState.value.copy(isLoadingMorePoolTrades = false, hasMorePoolTrades = false)
+                    return@launch
+                }
+                val decimals = tokenRepository.getDecimalsForToken(tokenName)
+                val tokenDiv = Math.pow(10.0, decimals.toDouble())
+                val tokenId = tokenRepository.getTokenIdForName(tokenName) ?: ""
+                val nowMs = System.currentTimeMillis()
+                // Overlap by 1: fetch from (page * 49) so the last box of the previous page
+                // is the first of this page, enabling delta calculation.
+                val offset = poolTradesPage * 49
+                val (currentHeight, boxes) = nodePool.withRetry { poolClient ->
+                    val h = try { poolClient.getHeight() } catch (e: Exception) { 0 }
+                    val resp = poolClient.api.getBoxesByTokenId(poolNft, offset, 50)
+                    val b = resp["items"] as? List<Map<String, Any>> ?: emptyList()
+                    Pair(h, b)
+                }
+                if (boxes.size < 2) {
+                    withContext(Dispatchers.Main) {
+                        _uiState.value = _uiState.value.copy(isLoadingMorePoolTrades = false, hasMorePoolTrades = false)
+                    }
+                    return@launch
+                }
+                val hasMore = boxes.size >= 50
+                if (hasMore) lastPoolBoxForNextPage = boxes.lastOrNull()
+
+                data class RawTrade(val isBuy: Boolean, val erg: Double, val tokens: Double, val timestamp: Long, val txId: String, val priceImpact: Double?)
+                val rawTrades = mutableListOf<RawTrade>()
+                val cutoff24h = nowMs - 24 * 3_600_000L
+                val cutoff7d = nowMs - 7 * 24 * 3_600_000L
+
+                for (i in 0 until boxes.size - 1) {
+                    val newer = boxes[i]; val older = boxes[i + 1]
+                    val newerErg = (newer["value"] as? Number)?.toLong() ?: continue
+                    val olderErg = (older["value"] as? Number)?.toLong() ?: continue
+                    val newerAssets = newer["assets"] as? List<Map<String, Any>> ?: continue
+                    val olderAssets = older["assets"] as? List<Map<String, Any>> ?: continue
+                    if (newerAssets.size < 3 || olderAssets.size < 3) continue
+                    val newerToken = (newerAssets[2]["amount"] as? Number)?.toLong() ?: continue
+                    val olderToken = (olderAssets[2]["amount"] as? Number)?.toLong() ?: continue
+                    val ergDelta = newerErg - olderErg; val tokenDelta = newerToken - olderToken
+                    val ergAbs = Math.abs(ergDelta) / 1_000_000_000.0
+                    val tokenAbs = Math.abs(tokenDelta) / tokenDiv
+                    if (ergAbs < 0.001 && tokenAbs < 0.000001) continue
+                    val txId = (newer["transactionId"] as? String) ?: ""
+                    val height = (newer["inclusionHeight"] as? Number)?.toInt() ?: 0
+                    val estimatedTs = if (currentHeight > 0 && height > 0)
+                        nowMs - (currentHeight - height) * 120_000L else 0L
+                    val priceImpact = if (olderErg > 0 && olderToken > 0 && newerErg > 0 && newerToken > 0) {
+                        val priceBefore = olderErg.toDouble() / olderToken.toDouble()
+                        val priceAfter  = newerErg.toDouble() / newerToken.toDouble()
+                        ((priceAfter - priceBefore) / priceBefore) * 100.0
+                    } else null
+                    rawTrades.add(RawTrade(ergDelta > 0, ergAbs, tokenAbs, estimatedTs, txId, priceImpact))
+                }
+
+                // Quick display first, then enrich with addresses
+                val quickTrades = rawTrades.map { PoolTrade(it.isBuy, it.erg, it.tokens, it.timestamp, it.txId, priceImpact = it.priceImpact) }
+                val existingTrades = _uiState.value.poolTrades
+                val merged = (existingTrades + quickTrades).distinctBy { it.txId }
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(
+                        poolTrades = merged,
+                        isLoadingMorePoolTrades = false,
+                        hasMorePoolTrades = hasMore
+                    )
+                }
+
+                // Enrich with trader addresses in background
+                val enriched = coroutineScope {
+                    rawTrades.map { raw ->
+                        async {
+                            try {
+                                if (raw.txId.isEmpty()) return@async PoolTrade(raw.isBuy, raw.erg, raw.tokens, raw.timestamp, raw.txId, priceImpact = raw.priceImpact)
+                                val tx = nodePool.withRetry { poolClient -> poolClient.api.getTransactionById(raw.txId) }
+                                    ?: return@async PoolTrade(raw.isBuy, raw.erg, raw.tokens, raw.timestamp, raw.txId, priceImpact = raw.priceImpact)
+                                val realTs = (tx["timestamp"] as? Number)?.toLong() ?: raw.timestamp
+                                val outputs = tx["outputs"] as? List<Map<String, Any>> ?: emptyList()
+                                val trader = if (raw.isBuy) {
+                                    outputs.firstOrNull { out ->
+                                        val assets = out["assets"] as? List<Map<String, Any>> ?: emptyList()
+                                        val hasPoolNft = assets.any { (it["tokenId"] as? String) == poolNft }
+                                        val hasTradedToken = tokenId.isNotEmpty() && assets.any { (it["tokenId"] as? String) == tokenId }
+                                        !hasPoolNft && hasTradedToken
+                                    }?.get("address") as? String ?: ""
+                                } else {
+                                    outputs.filter { out ->
+                                        val assets = out["assets"] as? List<Map<String, Any>> ?: emptyList()
+                                        !assets.any { (it["tokenId"] as? String) == poolNft }
+                                    }.maxByOrNull { (it["value"] as? Number)?.toLong() ?: 0L }?.get("address") as? String ?: ""
+                                }
+                                PoolTrade(raw.isBuy, raw.erg, raw.tokens, realTs, raw.txId, trader, priceImpact = raw.priceImpact)
+                            } catch (e: Exception) { PoolTrade(raw.isBuy, raw.erg, raw.tokens, raw.timestamp, raw.txId, priceImpact = raw.priceImpact) }
+                        }
+                    }.awaitAll()
+                }
+                val finalMerged = (existingTrades + enriched).distinctBy { it.txId }
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(poolTrades = finalMerged)
+                }
+            } catch (e: Exception) {
+                if (BuildConfig.DEBUG) Log.d(TAG, "fetchMorePoolTrades failed: ${e.message}")
+                withContext(Dispatchers.Main) {
+                    _uiState.value = _uiState.value.copy(isLoadingMorePoolTrades = false)
+                }
             }
         }
     }
@@ -586,7 +725,8 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
             "USE Bank" to com.piggytrade.piggytrade.stablecoin.use.UseConfig.BANK_ADDRESS,
             "USE Pool" to (NetworkConfig.USE_CONFIG["pool_address"] as String),
             "DexyGold Bank" to com.piggytrade.piggytrade.stablecoin.dexygold.DexyGoldConfig.BANK_ADDRESS,
-            "DexyGold Pool" to (NetworkConfig.DEXYGOLD_CONFIG["pool_address"] as String)
+            "DexyGold Pool" to (NetworkConfig.DEXYGOLD_CONFIG["pool_address"] as String),
+            "SigmaUSD Bank" to "MUbV38YgqHy7XbsoXWF5z7EZm524Ybdwe5p9WDrbhruZRtehkRPT92imXer2eTkjwPDfboa1pR3zb3deVKVq3H7Xt98qcTqLuSBSbHb7izzo5jphEpcnqyKJ2xhmpNPVvmtbdJNdvdopPrHHDBbAGGeW7XYTQwEeoRfosXzcDtiGgw97b2aqjTsNFmZk7khBEQywjYfmoDc9nUCJMZ3vbSspnYo3LarLe55mh2Np8MNJqUN9APA6XkhZCrTTDRZb1B4krgFY1sVMswg2ceqguZRvC9pqt3tUUxmSnB24N6dowfVJKhLXwHPbrkHViBv1AKAJTmEaQW2DN1fRmD9ypXxZk8GXmYtxTtrj3BiunQ4qzUCu1eGzxSREjpkFSi2ATLSSDqUwxtRz639sHM6Lav4axoJNPCHbY8pvuBKUxgnGRex8LEGM8DeEJwaJCaoy8dBw9Lz49nq5mSsXLeoC4xpTUmp47Bh7GAZtwkaNreCu74m9rcZ8Di4w1cmdsiK1NWuDh9pJ2Bv7u3EfcurHFVqCkT3P86JUbKnXeNxCypfrWsFuYNKYqmjsix82g9vWcGMmAcu5nagxD4iET86iE2tMMfZZ5vqZNvntQswJyQqv2Wc6MTh4jQx1q2qJZCQe4QdEK63meTGbZNNKMctHQbp3gRkZYNrBtxQyVtNLR8xEY8zGp85GeQKbb37vqLXxRpGiigAdMe3XZA4hhYPmAAU5hpSMYaRAjtvvMT3bNiHRACGrfjvSsEG9G2zY5in2YWz5X9zXQLGTYRsQ4uNFkYoQRCBdjNxGv6R58Xq74zCgt19TxYZ87gPWxkXpWwTaHogG1eps8WXt8QzwJ9rVx6Vu9a5GjtcGsQxHovWmYixgBU8X9fPNJ9UQhYyAWbjtRSuVBtDAmoV1gCBEPwnYVP5GCGhCocbwoYhZkZjFZy6ws4uxVLid3FxuvhWvQrVEDYp7WRvGXbNdCbcSXnbeTrPMey1WPaXX"
         )
         contracts.map { (name, address) ->
             async {
@@ -618,8 +758,16 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
         NetworkConfig.SPECTRUM_ADDRESS to "DEX Swap",
         NetworkConfig.SPECTRUM_TOKEN_ADDRESS to "DEX T2T",
         (NetworkConfig.USE_CONFIG["lp_swap_address"] as String) to "LP Swap",
+        // USE sub-contracts
         com.piggytrade.piggytrade.stablecoin.use.UseConfig.BANK_ADDRESS to "USE Bank",
+        com.piggytrade.piggytrade.stablecoin.use.UseConfig.FREEMINT_ADDRESS to "USE Freemint",
+        com.piggytrade.piggytrade.stablecoin.use.UseConfig.ARBMINT_ADDRESS to "USE Arbmint",
+        com.piggytrade.piggytrade.stablecoin.use.UseConfig.INTERVENTION_ADDRESS to "USE Intervention",
+        // DexyGold sub-contracts
         com.piggytrade.piggytrade.stablecoin.dexygold.DexyGoldConfig.BANK_ADDRESS to "DexyGold Bank",
+        com.piggytrade.piggytrade.stablecoin.dexygold.DexyGoldConfig.FREEMINT_ADDRESS to "DexyGold Freemint",
+        com.piggytrade.piggytrade.stablecoin.dexygold.DexyGoldConfig.ARBMINT_ADDRESS to "DexyGold Arbmint",
+        // SigmaUSD Bank
         "MUbV38YgqHy7XbsoXWF5z7EZm524Ybdwe5p9WDrbhruZRtehkRPT92imXer2eTkjwPDfboa1pR3zb3deVKVq3H7Xt98qcTqLuSBSbHb7izzo5jphEpcnqyKJ2xhmpNPVvmtbdJNdvdopPrHHDBbAGGeW7XYTQwEeoRfosXzcDtiGgw97b2aqjTsNFmZk7khBEQywjYfmoDc9nUCJMZ3vbSspnYo3LarLe55mh2Np8MNJqUN9APA6XkhZCrTTDRZb1B4krgFY1sVMswg2ceqguZRvC9pqt3tUUxmSnB24N6dowfVJKhLXwHPbrkHViBv1AKAJTmEaQW2DN1fRmD9ypXxZk8GXmYtxTtrj3BiunQ4qzUCu1eGzxSREjpkFSi2ATLSSDqUwxtRz639sHM6Lav4axoJNPCHbY8pvuBKUxgnGRex8LEGM8DeEJwaJCaoy8dBw9Lz49nq5mSsXLeoC4xpTUmp47Bh7GAZtwkaNreCu74m9rcZ8Di4w1cmdsiK1NWuDh9pJ2Bv7u3EfcurHFVqCkT3P86JUbKnXeNxCypfrWsFuYNKYqmjsix82g9vWcGMmAcu5nagxD4iET86iE2tMMfZZ5vqZNvntQswJyQqv2Wc6MTh4jQx1q2qJZCQe4QdEK63meTGbZNNKMctHQbp3gRkZYNrBtxQyVtNLR8xEY8zGp85GeQKbb37vqLXxRpGiigAdMe3XZA4hhYPmAAU5hpSMYaRAjtvvMT3bNiHRACGrfjvSsEG9G2zY5in2YWz5X9zXQLGTYRsQ4uNFkYoQRCBdjNxGv6R58Xq74zCgt19TxYZ87gPWxkXpWwTaHogG1eps8WXt8QzwJ9rVx6Vu9a5GjtcGsQxHovWmYixgBU8X9fPNJ9UQhYyAWbjtRSuVBtDAmoV1gCBEPwnYVP5GCGhCocbwoYhZkZjFZy6ws4uxVLid3FxuvhWvQrVEDYp7WRvGXbNdCbcSXnbeTrPMey1WPaXX" to "SigmaUSD Bank"
     )
 
@@ -657,6 +805,34 @@ class MarketViewModel(application: Application) : AndroidViewModel(application) 
         val rawOutputs = tx["outputs"] as? List<Map<String, Any>> ?: emptyList()
 
         var effectiveLabel = protocolLabel
+        // ── Intervention: bank spends ERG to buy USE from LP (peg defence) ──────
+        if (protocolLabel == "USE Intervention") {
+            // Find bank box in inputs and outputs by bank NFT presence
+            val bankNft = com.piggytrade.piggytrade.stablecoin.use.UseConfig.BANK_NFT
+            fun getBoxErg(boxes: List<Map<String, Any>>, nft: String) =
+                boxes.firstOrNull { box -> (box["assets"] as? List<Map<String, Any>> ?: emptyList()).any { (it["tokenId"] as? String) == nft } }
+            val bankIn  = getBoxErg(rawInputs,  bankNft)
+            val bankOut = getBoxErg(rawOutputs, bankNft)
+            if (bankIn != null && bankOut != null) {
+                val bankErgIn  = (bankIn["value"]  as? Number)?.toLong() ?: 0L
+                val bankErgOut = (bankOut["value"] as? Number)?.toLong() ?: 0L
+                val ergSpent = bankErgIn - bankErgOut   // positive → bank sent ERG out
+                val bankAssetsIn  = bankIn["assets"]  as? List<Map<String, Any>> ?: emptyList()
+                val bankAssetsOut = bankOut["assets"] as? List<Map<String, Any>> ?: emptyList()
+                val useId = com.piggytrade.piggytrade.stablecoin.use.UseConfig.USE_TOKEN_ID
+                val useIn  = (bankAssetsIn.firstOrNull  { (it["tokenId"] as? String) == useId }?.get("amount") as? Number)?.toLong() ?: 0L
+                val useOut = (bankAssetsOut.firstOrNull { (it["tokenId"] as? String) == useId }?.get("amount") as? Number)?.toLong() ?: 0L
+                val useBought = useOut - useIn   // positive → bank received more USE
+                val sentStr = if (ergSpent > 1_000_000L) String.format("%.4f ERG (bank)", ergSpent.toDouble() / 1e9) else null
+                val recvStr = if (useBought > 0L) String.format("%.3f USE ← LP", useBought.toDouble() / 1000.0) else null
+                return EcosystemTx(
+                    txId = txId, protocol = effectiveLabel, timestamp = timestamp,
+                    traderAddress = "Protocol",
+                    sent = sentStr ?: "—", received = recvStr ?: "—",
+                    priceImpact = null, isConfirmed = isConfirmed
+                )
+            }
+        }
         if (protocolLabel.contains("Bank")) {
             val allTokenIds = mutableSetOf<String>()
             for (box in rawInputs + rawOutputs) for (a in (box["assets"] as? List<Map<String, Any>> ?: emptyList())) (a["tokenId"] as? String)?.let { allTokenIds.add(it) }
